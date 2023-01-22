@@ -56,7 +56,10 @@ def main(args):
     device = torch.device("cuda", index=misc.get_rank())
     model, loss = model.to(device), loss.to(device)
 
-    model = DDP(model, device_ids=[device])
+    model = DDP(model,
+                device_ids=[device],
+                # find_unused_parameters=True,
+                )
 
     if args.evaluate_only:
         logger.info('###################  Evaluation Only  ##################')

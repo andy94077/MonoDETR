@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .transformer import TransformerEncoder, TransformerEncoderLayer
+from utils import depth_utils
 
 
 class DepthPredictor(nn.Module):
@@ -53,8 +54,8 @@ class DepthPredictor(nn.Module):
 
         self.depth_pos_embed = nn.Embedding(int(self.depth_max) + 1, 256)
 
-    def forward(self, feature, mask, pos):
-       
+    def forward(self, feature, mask, pos, targets):
+
         assert len(feature) == 4
 
         # foreground depth map
@@ -66,8 +67,29 @@ class DepthPredictor(nn.Module):
         src = self.depth_head(src)
         depth_logits = self.depth_classifier(src)
 
-        depth_probs = F.softmax(depth_logits, dim=1)
-        weighted_depth = (depth_probs * self.depth_bin_values.reshape(1, -1, 1, 1)).sum(dim=1)
+        # gt depth_map + weighted_depth
+        # weighted_depth = depth_utils.get_gt_depth_map_values(depth_logits, targets)
+        # num_bins = 80
+        # depth_indices = depth_utils.bin_depths(weighted_depth, num_bins=num_bins, target=True)
+        # # [batch, depth_map_H, depth_map_W, num_depth_bins], dtype: torch.float
+        # depth_logits = F.one_hot(depth_indices, num_classes=num_bins + 1).float() * 10
+        # # [batch, num_depth_bins, depth_map_H, depth_map_W], dtype: torch.float
+        # depth_logits = depth_logits.permute(0, 3, 1, 2)
+
+        # gt depth_map
+        weighted_depth = depth_utils.get_gt_depth_map_values(depth_logits, targets)
+        num_bins = 80
+        depth_indices = depth_utils.bin_depths(weighted_depth, num_bins=num_bins, target=True)
+        # [batch, depth_map_H, depth_map_W, num_depth_bins], dtype: torch.float
+        depth_logits = F.one_hot(depth_indices, num_classes=num_bins + 1).float()
+        # [batch, num_depth_bins, depth_map_H, depth_map_W], dtype: torch.float
+        depth_logits = depth_logits.permute(0, 3, 1, 2)
+        weighted_depth = (depth_logits * self.depth_bin_values.reshape(1, -1, 1, 1)).sum(dim=1)
+        depth_logits *= 10
+
+        # normal
+        # depth_probs = F.softmax(depth_logits, dim=1)
+        # weighted_depth = (depth_probs * self.depth_bin_values.reshape(1, -1, 1, 1)).sum(dim=1)
 
         # depth embeddings with depth positional encodings
         B, C, H, W = src.shape

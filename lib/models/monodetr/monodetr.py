@@ -134,7 +134,7 @@ class MonoDETR(nn.Module):
             for box_embed in self.bbox_embed:
                 nn.init.constant_(box_embed.layers[-1].bias.data[2:], 0.0)
 
-    def forward(self, images, calibs, img_sizes) -> Dict[str, Union[torch.Tensor, List[Dict[str, torch.Tensor]], Dict[str, torch.Tensor]]]:
+    def forward(self, images, calibs, img_sizes, targets) -> Dict[str, Union[torch.Tensor, List[Dict[str, torch.Tensor]], Dict[str, torch.Tensor]]]:
         """The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -182,7 +182,7 @@ class MonoDETR(nn.Module):
         if not self.two_stage:
             query_embeds = self.query_embed.weight
 
-        pred_depth_map_logits, depth_pos_embed, weighted_depth = self.depth_predictor(srcs, masks[1], pos[1])
+        pred_depth_map_logits, depth_pos_embed, weighted_depth = self.depth_predictor(srcs, masks[1], pos[1], targets)
 
         hs, init_reference, inter_references, inter_references_dim, enc_outputs_class, enc_outputs_coord_unact = self.depthaware_transformer(
             srcs, masks, pos, query_embeds, depth_pos_embed)

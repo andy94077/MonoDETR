@@ -94,9 +94,10 @@ class Tester(object):
             img_sizes = info['img_size'].to(self.device)
 
             start_time = time.time()
-            for key in targets:
-                targets[key] = targets[key].to(self.device)
-            targets = prepare_targets(targets, inputs.shape[0])
+            if targets:
+                for key in targets:
+                    targets[key] = targets[key].to(self.device)
+                targets = prepare_targets(targets, inputs.shape[0])
 
             outputs = self.model(inputs, calibs, img_sizes, targets)
             if writer is not None:

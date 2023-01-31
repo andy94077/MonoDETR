@@ -5,7 +5,7 @@ from .transformer import TransformerEncoder, TransformerEncoderLayer
 from utils import depth_utils
 
 
-class DepthPredictor(nn.Module):
+class DepthPredictorResidual(nn.Module):
 
     def __init__(self, model_cfg):
         """
@@ -14,16 +14,13 @@ class DepthPredictor(nn.Module):
             model_cfg [EasyDict]: Depth classification network config
         """
         super().__init__()
-        depth_num_bins = int(model_cfg["num_depth_bins"])
-        depth_min = float(model_cfg["depth_min"])
-        depth_max = float(model_cfg["depth_max"])
-        self.depth_max = depth_max
+        self.num_depth_bins = int(model_cfg["num_depth_bins"])
+        self.depth_min = float(model_cfg["depth_min"])
+        self.depth_max = float(model_cfg["depth_max"])
 
-        bin_size = 2 * (depth_max - depth_min) / (depth_num_bins * (1 + depth_num_bins))
-        bin_indice = torch.linspace(0, depth_num_bins - 1, depth_num_bins)
-        bin_value = (bin_indice + 0.5).pow(2) * bin_size / 2 - bin_size / 8 + depth_min
-        bin_value = torch.cat([bin_value, torch.tensor([depth_max])], dim=0)
-        self.depth_bin_values = nn.Parameter(bin_value, requires_grad=False)
+        self.depth_bin_values = nn.parameter.Parameter(
+            depth_utils.get_depth_bin_values(self.depth_min, self.depth_max, self.num_depth_bins),
+            requires_grad=False)
 
         # Create modules
         d_model = model_cfg["hidden_dim"]
@@ -45,7 +42,8 @@ class DepthPredictor(nn.Module):
             nn.GroupNorm(32, num_channels=d_model),
             nn.ReLU())
 
-        self.depth_classifier = nn.Conv2d(d_model, depth_num_bins + 1, kernel_size=(1, 1))
+        self.depth_classifier = nn.Conv2d(d_model, self.num_depth_bins + 1, kernel_size=(1, 1))
+        self.depth_residual = nn.Conv2d(d_model, self.num_depth_bins + 1, kernel_size=(1, 1))
 
         depth_encoder_layer = TransformerEncoderLayer(
             d_model, nhead=8, dim_feedforward=256, dropout=0.1)
@@ -65,31 +63,22 @@ class DepthPredictor(nn.Module):
         src = (src_8 + src_16 + src_32) / 3
 
         src = self.depth_head(src)
-        depth_logits = self.depth_classifier(src)
+        depth_logits: torch.Tensor = self.depth_classifier(src)
+        # [batch, num_depth_bins + 1, depth_map_H, depth_map_W]
+        depth_residual: torch.Tensor = self.depth_residual(src)
 
-        # gt depth_map + weighted_depth
         # weighted_depth = depth_utils.get_gt_depth_map_values(depth_logits, targets)
         # num_bins = 80
         # depth_indices = depth_utils.bin_depths(weighted_depth, num_bins=num_bins, target=True)
-        # # [batch, depth_map_H, depth_map_W, num_depth_bins], dtype: torch.float
+        # # [batch, depth_map_H, depth_map_W, num_depth_bins + 1], dtype: torch.float
         # depth_logits = F.one_hot(depth_indices, num_classes=num_bins + 1).float() * 10
         # # [batch, num_depth_bins, depth_map_H, depth_map_W], dtype: torch.float
         # depth_logits = depth_logits.permute(0, 3, 1, 2)
 
-        # gt depth_map
-        # weighted_depth = depth_utils.get_gt_depth_map_values(depth_logits, targets)
-        # num_bins = 80
-        # depth_indices = depth_utils.bin_depths(weighted_depth, num_bins=num_bins, target=True)
-        # # [batch, depth_map_H, depth_map_W, num_depth_bins], dtype: torch.float
-        # depth_logits = F.one_hot(depth_indices, num_classes=num_bins + 1).float()
-        # # [batch, num_depth_bins, depth_map_H, depth_map_W], dtype: torch.float
-        # depth_logits = depth_logits.permute(0, 3, 1, 2)
-        # weighted_depth = (depth_logits * self.depth_bin_values.reshape(1, -1, 1, 1)).sum(dim=1)
-        # depth_logits *= 10
-
-        # normal
         depth_probs = F.softmax(depth_logits, dim=1)
-        weighted_depth = (depth_probs * self.depth_bin_values.reshape(1, -1, 1, 1)).sum(dim=1)
+        # [batch, depth_map_H, depth_map_W]
+        weighted_depth = torch.einsum('bchw,c->bhw', depth_probs, self.depth_bin_values)
+        weighted_depth += depth_residual.gather(dim=1, index=depth_logits.argmax(1, keepdim=True)).squeeze()
 
         # depth embeddings with depth positional encodings
         B, C, H, W = src.shape
@@ -103,7 +92,7 @@ class DepthPredictor(nn.Module):
         depth_pos_embed_ip = self.interpolate_depth_embed(weighted_depth)
         depth_embed = depth_embed + depth_pos_embed_ip
 
-        return depth_logits, depth_embed, weighted_depth
+        return depth_logits, depth_embed, weighted_depth, depth_residual
 
     def interpolate_depth_embed(self, depth):
         depth = depth.clamp(min=0, max=self.depth_max)

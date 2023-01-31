@@ -23,7 +23,7 @@ dataset:
   scale: 0.05
   shift: 0.05
 
-model_name: "monodetr_rdiou_giou_matched_targets_depth_ave_regularization_0.001_num_group_members_3"
+model_name: "monodetr_rdiou_giou_matched_targets_depth_ave_depth_residual_supervised_l2_7"
 
 model:
   num_classes: 3
@@ -42,6 +42,7 @@ model:
   num_depth_bins: 80
   depth_min: 1e-3
   depth_max: 60.0
+  with_depth_residual: True
 
   # Transformer
   with_box_refine: True
@@ -92,6 +93,8 @@ loss:
       loss_cls,
       loss_depth,
       loss_depth_map,
+      # loss_depth_map_residual,
+      loss_depth_map_with_residual,
       loss_dim,
       loss_giou,
       loss_rdiou,
@@ -106,18 +109,19 @@ loss:
     loss_cls: 2 # classification
     loss_depth: 1
     loss_depth_map: 1 # DDN loss
+    loss_depth_residual: 0.1
     loss_dim: 1
     loss_giou: 2 # 3D boxes to 2D boxes IoU
     loss_rdiou: 2
 
-regularization:
-  losses: [depth_embed_regularization]
-  weights:
-    depth_embed_regularization: 1.e-3
-  args:
-    depth_embed_regularization:
-      num_group_members: 3
-      margin: 1
+# regularization:
+#   losses: [depth_embed_regularization]
+#   weights:
+#     depth_embed_regularization: 1.e-3
+#   args:
+#     depth_embed_regularization:
+#       num_group_members: 3
+#       margin: 1
 
 optimizer:
   type: "adamw"
@@ -129,12 +133,15 @@ lr_scheduler:
   warmup: False # 5 epoches, cosine warmup, init_lir=0.00001 in default
   decay_rate: 0.1
   decay_list: [125, 165]
+  # decay_rate: 0.6
+  # decay_list: [80, 100, 125, 165]
 
 trainer:
   max_epoch: 195
   save_frequency: 1 # checkpoint save interval (in epoch)
   # resume_model: True
-  # pretrain_model: runs/monodetr2/checkpoint_best.pth
+  pretrain_model: ckpts/checkpoint_best_20.61AP.pth
+  # pretrain_model: runs/monodetr_rdiou_giou_matched_targets_depth_ave_gt_weighted_depth/checkpoint_best.pth
   log_frequency: 5 # tensorboard log frequency (per epoch) (1 ~ 100)
   save_path: "./runs/"
   save_all: False # False for only savng the best and latest ckpts

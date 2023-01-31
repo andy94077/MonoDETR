@@ -1,5 +1,5 @@
 import warnings
-from typing import Optional
+from typing import Literal, Optional
 
 import torch
 import torch.nn as nn
@@ -50,6 +50,142 @@ def one_hot(
     one_hot = torch.zeros((shape[0], num_classes) + shape[1:], device=device, dtype=dtype)
 
     return one_hot.scatter_(1, labels.unsqueeze(1), 1.0) + eps
+
+
+def regression_focal_loss(
+    logit: torch.Tensor,
+    input: torch.Tensor,
+    logit_target: torch.Tensor,
+    regression_target: torch.Tensor,
+    alpha: float,
+    gamma: float = 2.0,
+    norm: Literal['l1', 'l2'] = 'l1',
+    reduction: str = 'none',
+) -> torch.Tensor:
+    r"""Criterion that computes Focal loss.
+    According to :cite:`lin2018focal`, the Focal loss is computed as follows:
+    .. math::
+        \text{FL}(p_t) = -\alpha_t (1 - p_t)^{\gamma} \, \text{log}(p_t)
+    Where:
+       - :math:`p_t` is the model's estimated probability for each class.
+    Args:
+        logit: logits tensor with shape :math:`(N, C, *)` where C = number of classes.
+        input: regression tensor with shape :math:`(N, C, *)` where C = number of classes.
+        logit_target: labels tensor with shape :math:`(N, *)` where each value is :math:`0 ≤ targets[i] ≤ C−1`.
+        regression_target: regression tensor with shape :math:`(N, C, *)` where C = number of classes.
+        alpha: Weighting factor :math:`\alpha \in [0, 1]`.
+        gamma: Focusing parameter :math:`\gamma >= 0`.
+        norm: Specifies the p-norm of `input` and `target`: ``'l1'`` | ``'l2'``. Default: ``'l1'``.
+        reduction: Specifies the reduction to apply to the
+          output: ``'none'`` | ``'mean'`` | ``'sum'``. ``'none'``: no reduction
+          will be applied, ``'mean'``: the sum of the output will be divided by
+          the number of elements in the output, ``'sum'``: the output will be
+          summed.
+    Return:
+        the computed loss.
+    Example:
+        >>> N = 5  # num_classes
+        >>> input = torch.randn(1, N, 3, 5, requires_grad=True)
+        >>> target = torch.empty(1, 3, 5, dtype=torch.long).random_(N)
+        >>> output = focal_loss(input, target, alpha=0.5, gamma=2.0, reduction='mean')
+        >>> output.backward()
+    """
+    if not isinstance(input, torch.Tensor):
+        raise TypeError(f"Input type is not a torch.Tensor. Got {type(input)}")
+
+    if not len(input.shape) >= 2:
+        raise ValueError(f"Invalid input shape, we expect BxCx*. Got: {input.shape}")
+
+    if input.size(0) != logit_target.size(0):
+        raise ValueError(f'Expected input batch_size ({input.size(0)}) to match target batch_size ({logit_target.size(0)}).')
+
+    n = input.size(0)
+    out_size = (n,) + input.size()[2:]
+    if logit_target.size()[1:] != input.size()[2:]:
+        raise ValueError(f'Expected target size {out_size}, got {logit_target.size()}')
+
+    if not input.device == logit_target.device:
+        raise ValueError(f"input and target must be in the same device. Got: {input.device} and {logit_target.device}")
+
+    # compute softmax over the classes axis
+    logit_soft: torch.Tensor = F.softmax(logit, dim=1)
+    input_value = input.gather(dim=1, index=logit_target.unsqueeze(1)).squeeze()
+    if norm == 'l1':
+        input_norm_loss: torch.Tensor = F.l1_loss(input_value, regression_target)
+    elif norm == 'l2':
+        input_norm_loss: torch.Tensor = F.mse_loss(input_value, regression_target)
+    else:
+        raise NotImplementedError(f'Invalid norm type "{norm}". Expected norm types are: "l1", "l2".')
+
+    # create the labels one hot tensor
+    target_one_hot: torch.Tensor = one_hot(logit_target, num_classes=input.shape[1], device=input.device, dtype=input.dtype)
+
+    # compute the actual focal loss
+    weight = torch.pow(-logit_soft + 1.0, gamma)
+
+    focal = alpha * weight * input_norm_loss
+    loss_tmp = torch.einsum('bc...,bc...->b...', (target_one_hot, focal))
+
+    if reduction == 'none':
+        loss = loss_tmp
+    elif reduction == 'mean':
+        loss = torch.mean(loss_tmp)
+    elif reduction == 'sum':
+        loss = torch.sum(loss_tmp)
+    else:
+        raise NotImplementedError(f"Invalid reduction mode: {reduction}")
+    return loss
+
+
+class RegressionFocalLoss(nn.Module):
+    r"""Criterion that computes Focal loss.
+    According to :cite:`lin2018focal`, the Focal loss is computed as follows:
+    .. math::
+        \text{FL}(p_t) = -\alpha_t (1 - p_t)^{\gamma} \, \text{log}(p_t)
+    Where:
+       - :math:`p_t` is the model's estimated probability for each class.
+    Args:
+        alpha: Weighting factor :math:`\alpha \in [0, 1]`.
+        gamma: Focusing parameter :math:`\gamma >= 0`.
+        norm: Specifies the p-norm of `input` and `target`: ``'l1'`` | ``'l2'``. Default: ``'l1'``.
+        reduction: Specifies the reduction to apply to the
+          output: ``'none'`` | ``'mean'`` | ``'sum'``. ``'none'``: no reduction
+          will be applied, ``'mean'``: the sum of the output will be divided by
+          the number of elements in the output, ``'sum'``: the output will be
+          summed.
+    Shape:
+        - logit: logits tensor with shape :math:`(N, C, *)` where C = number of classes.
+        - input: regression tensor with shape :math:`(N, C, *)` where C = number of classes.
+        - logit_target: labels tensor with shape :math:`(N, *)` where each value is :math:`0 ≤ targets[i] ≤ C−1`.
+        - regression_target: regression tensor with shape :math:`(N, C, *)` where C = number of classes.
+    Example:
+        >>> N = 5  # num_classes
+        >>> kwargs = {"alpha": 0.5, "gamma": 2.0, "reduction": 'mean'}
+        >>> criterion = FocalLoss(**kwargs)
+        >>> input = torch.randn(1, N, 3, 5, requires_grad=True)
+        >>> target = torch.empty(1, 3, 5, dtype=torch.long).random_(N)
+        >>> output = criterion(input, target)
+        >>> output.backward()
+    """
+
+    def __init__(self, alpha: float, gamma: float = 2.0, norm: Literal['l1', 'l2'] = 'l1', reduction: str = 'none') -> None:
+        super().__init__()
+        self.alpha: float = alpha
+        self.gamma: float = gamma
+        self.norm: Literal['l1', 'l2'] = norm
+        self.reduction: str = reduction
+
+    def forward(self,
+                logit: torch.Tensor,
+                input: torch.Tensor,
+                logit_target: torch.Tensor,
+                regression_target: torch.Tensor,
+                ) -> torch.Tensor:
+        return regression_focal_loss(logit,
+                                     input,
+                                     logit_target,
+                                     regression_target,
+                                     self.alpha, self.gamma, self.norm, self.reduction)
 
 
 def focal_loss(

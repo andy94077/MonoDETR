@@ -1,11 +1,12 @@
 import math
 from typing import Dict, List
 import torch
+import torch.nn.functional as F
 
 from utils import box_ops
 
 
-def bin_depths(depth_map, mode="LID", depth_min=1e-3, depth_max=60, num_bins=80, target=False):
+def bin_depths(depth_map, mode="LID", depth_min: float = 1e-3, depth_max: float = 60, num_bins: int = 80, target: bool = False):
     """
     Converts depth map into bin indices
     Args:
@@ -42,6 +43,14 @@ def bin_depths(depth_map, mode="LID", depth_min=1e-3, depth_max=60, num_bins=80,
         indices = indices.type(torch.int64)
 
     return indices
+
+
+def get_depth_bin_values(depth_min: float, depth_max: float, num_depth_bins: int) -> torch.Tensor:
+    bin_size = 2 * (depth_max - depth_min) / (num_depth_bins * (1 + num_depth_bins))
+    bin_indice = torch.linspace(0, num_depth_bins - 1, num_depth_bins)
+    bin_value = (bin_indice + 0.5).pow(2) * bin_size / 2 - bin_size / 8 + depth_min
+    depth_bin_values = torch.cat([bin_value, bin_value.new_tensor([depth_max])], dim=0)
+    return depth_bin_values
 
 
 def get_gt_depth_map_values(depth_logits: torch.Tensor, targets: List[Dict[str, torch.Tensor]]) -> torch.Tensor:

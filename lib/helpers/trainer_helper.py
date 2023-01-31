@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 import tqdm
 import logging
 
@@ -120,7 +120,7 @@ class Trainer(object):
                             ckpt_name)
                     if self.tester:
                         self.logger.info(f'Test Epoch {self.epoch}')
-                        val_losses_log_dict = self.tester.inference(loss=self.detr_loss, return_loss=True)
+                        val_losses_log_dict = self.tester.inference(loss=self.detr_loss, return_loss=True, writer=self.writer if self.with_tensorboard else None)
                         dist.barrier()
                         if misc.is_main_process():
                             result_dict, cur_result = self.tester.evaluate()
@@ -160,7 +160,7 @@ class Trainer(object):
 
             # train one batch
             self.optimizer.zero_grad()
-            outputs = self.model(inputs, calibs, img_sizes)
+            outputs = self.model(inputs, calibs, img_sizes, targets)
 
             detr_losses_dict, unweighted_losses_log_dict = self.detr_loss(outputs, targets)
             detr_losses = torch.stack(list(detr_losses_dict.values())).sum()

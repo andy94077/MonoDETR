@@ -1,5 +1,6 @@
 import os
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+from matplotlib import pyplot as plt
 import tqdm
 import logging
 
@@ -7,11 +8,14 @@ import torch
 from torch import nn
 from torch.types import Number
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from lib.helpers.dataloader_helper import prepare_targets
 from lib.helpers.save_helper import load_checkpoint
 from lib.helpers.decode_helper import extract_dets_from_outputs
 from lib.helpers.decode_helper import decode_detections
 import time
+
+from utils import depth_utils
 
 
 class Tester(object):
@@ -75,7 +79,7 @@ class Tester(object):
                 self.evaluate()
 
     @torch.no_grad()
-    def inference(self, loss: Optional[nn.Module] = None, return_loss: bool = False) -> Dict[str, Number]:
+    def inference(self, loss: Optional[nn.Module] = None, return_loss: bool = False, writer: Optional[SummaryWriter] = None) -> Dict[str, Number]:
         self.dataloader.sampler.set_epoch(self.epoch)
         self.epoch += 1
         self.model.eval()
@@ -90,11 +94,18 @@ class Tester(object):
             img_sizes = info['img_size'].to(self.device)
 
             start_time = time.time()
-            outputs = self.model(inputs, calibs, img_sizes)
-            if loss and return_loss:
+            if targets:
                 for key in targets:
                     targets[key] = targets[key].to(self.device)
                 targets = prepare_targets(targets, inputs.shape[0])
+
+            outputs = self.model(inputs, calibs, img_sizes, targets)
+            if writer is not None:
+                self.log_depth_map(writer, outputs['pred_depth_map_logits'], targets, global_step=self.epoch, tag='val/depth_map')
+            if loss and return_loss:
+                # for key in targets:
+                #     targets[key] = targets[key].to(self.device)
+                # targets = prepare_targets(targets, inputs.shape[0])
 
                 loss_dict, unweighted_loss_log_dict = loss(outputs, targets)
                 loss_detr = torch.stack(list(loss_dict.values())).sum()
@@ -159,3 +170,19 @@ class Tester(object):
         assert os.path.exists(results_dir)
         result_dict, car_moderate = self.dataloader.dataset.eval(results_dir=results_dir, logger=self.logger)
         return result_dict, car_moderate
+
+    def log_depth_map(self, writer: SummaryWriter, depth_logits: torch.Tensor, targets: List[Dict[str, torch.Tensor]], global_step: int, tag: str):
+        depth_map_values = depth_utils.get_gt_depth_map_values(depth_logits, targets)
+        depth_indices = depth_utils.bin_depths(depth_map_values, target=True).detach().cpu().numpy()
+
+        # [batch, depth_map_H, depth_map_W]
+        pred_depth_indices = depth_logits.argmax(1).detach().cpu().numpy()
+
+        fig, axes = plt.subplots(min(8, len(pred_depth_indices)), 2, figsize=(6, int(1.3 * min(8, len(pred_depth_indices)))))  # type: ignore
+        for ax, pred_depth_indice, depth_indice in zip(axes, pred_depth_indices, depth_indices):
+            ax[0].imshow(pred_depth_indice)
+            ax[1].imshow(depth_indice)
+        axes[0][0].set_title('pred')
+        axes[0][1].set_title('ground truth')
+
+        writer.add_figure(tag, fig, global_step=global_step)

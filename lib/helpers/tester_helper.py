@@ -39,7 +39,7 @@ class Tester(object):
         self.model_name = model_name
         self.epoch = 0
 
-    def test(self):
+    def test(self, loss=None):
         assert self.cfg['mode'] in ['single', 'all']
 
         # test a single checkpoint
@@ -55,7 +55,10 @@ class Tester(object):
                             map_location=self.device,
                             logger=self.logger)
             self.model.to(self.device)
-            self.inference()
+            if loss:
+                print(self.inference(loss=loss, return_loss=True))
+            else:
+                self.inference()
             self.evaluate()
 
         # test all checkpoints in the given dir
@@ -172,7 +175,7 @@ class Tester(object):
         return result_dict, car_moderate
 
     def log_depth_map(self, writer: SummaryWriter, depth_logits: torch.Tensor, targets: List[Dict[str, torch.Tensor]], global_step: int, tag: str):
-        depth_map_values = depth_utils.get_gt_depth_map_values(depth_logits, targets)
+        depth_map_values = depth_utils.get_gt_depth_map_values(depth_logits, targets, self.cfg['depth_max'])
         depth_indices = depth_utils.bin_depths(depth_map_values, target=True).detach().cpu().numpy()
 
         # [batch, depth_map_H, depth_map_W]

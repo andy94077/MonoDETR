@@ -505,16 +505,14 @@ class SetCriterion(nn.Module):
         depth_residual = outputs['pred_depth_residual']
 
         # [batch, depth_map_H, depth_map_W]
-        gt_depth_map_values = depth_utils.get_gt_depth_map_values(depth_map_logits, targets)
+        gt_depth_map_values = depth_utils.get_gt_depth_map_values(depth_map_logits, targets, self.depth_max)
         depth_target = depth_utils.bin_depths(gt_depth_map_values, depth_min=self.depth_min, depth_max=self.depth_max, num_bins=self.num_depth_bins, target=True)
-        # [batch, depth_map_H, depth_map_W, num_depth_bins], dtype: torch.float
-        depth_target_one_hot = F.one_hot(depth_target, num_classes=self.num_depth_bins + 1).float()
         # [batch, depth_map_H, depth_map_W]
-        gt_weighted_depth = torch.einsum('bhwc,c->bhw', depth_target_one_hot, self.depth_bin_values)
+        gt_weighted_depth = self.depth_bin_values[depth_target]
         gt_depth_residual = gt_depth_map_values - gt_weighted_depth
 
         depth_residual_value = depth_residual.gather(dim=1, index=depth_target.unsqueeze(1)).squeeze()
-        depth_residual_loss = F.l1_loss(depth_residual_value, gt_depth_residual, reduction='sum')
+        depth_residual_loss = F.l1_loss(depth_residual_value, gt_depth_residual, reduction='sum') / num_boxes
         return {'loss_depth_residual': depth_residual_loss}
 
     def _get_src_permutation_idx(self, indices: List[Tuple[torch.Tensor, torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor]:

@@ -8,3 +8,4 @@ lib/models/monodetr/ops/MultiScaleDeformableAttention.egg-info
 *.png
 *.csv
 .vscode/
+deprecated/

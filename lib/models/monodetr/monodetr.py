@@ -323,8 +323,14 @@ class SetCriterion(nn.Module):
             depth_utils.get_depth_bin_values(depth_min, depth_max, num_depth_bins),
             requires_grad=False)
 
-        self.ddn_loss = DDNLoss(alpha=self.focal_alpha)  # for depth map
-        self.ddn_with_residual_loss = DDNWithResidualLoss(alpha=self.focal_alpha)  # for depth map with residual
+        self.ddn_loss = DDNLoss(alpha=self.focal_alpha,
+                                depth_min=self.depth_min,
+                                depth_max=self.depth_max,
+                                num_depth_bins=self.num_depth_bins)  # for depth map
+        self.ddn_with_residual_loss = DDNWithResidualLoss(alpha=self.focal_alpha,
+                                                          depth_min=self.depth_min,
+                                                          depth_max=self.depth_max,
+                                                          num_depth_bins=self.num_depth_bins)  # for depth map with residual
 
     def loss_labels(self, outputs, targets, indices, num_boxes, **kwargs) -> torch.Tensor:
         """Classification loss (Binary focal loss)
@@ -574,7 +580,8 @@ class SetCriterion(nn.Module):
             len(matched_outputs[key_i]) = len(matched_targets[key_j]) = num_boxes_among_whole_batch for any key_i, key_j.
         """
         idx = self._get_src_permutation_idx(indices)
-        matched_outputs = {k: v[idx] for k, v in outputs.items() if k != 'aux_outputs'}
+        keys_to_match = ['pred_logits', 'pred_boxes', 'pred_3d_dim', 'pred_depth', 'pred_angle']
+        matched_outputs = {k: outputs[k][idx] for k in keys_to_match}
         matched_targets = {k: torch.cat([target[k][i] for target, (_, i) in zip(targets, indices)], dim=0)
                            for k in targets[0]}
 

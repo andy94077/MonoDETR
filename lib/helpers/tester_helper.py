@@ -176,7 +176,11 @@ class Tester(object):
 
     def log_depth_map(self, writer: SummaryWriter, depth_logits: torch.Tensor, targets: List[Dict[str, torch.Tensor]], global_step: int, tag: str):
         depth_map_values = depth_utils.get_gt_depth_map_values(depth_logits, targets, self.cfg['depth_max'])
-        depth_indices = depth_utils.bin_depths(depth_map_values, target=True).detach().cpu().numpy()
+        depth_indices = depth_utils.bin_depths(depth_map_values,
+                                               target=True,
+                                               depth_min=self.cfg['depth_min'],
+                                               depth_max=self.cfg['depth_max'],
+                                               num_bins=self.cfg['num_depth_bins']).detach().cpu().numpy()
 
         # [batch, depth_map_H, depth_map_W]
         pred_depth_indices = depth_logits.argmax(1).detach().cpu().numpy()

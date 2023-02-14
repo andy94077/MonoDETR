@@ -67,13 +67,27 @@ class DepthPredictorResidual(nn.Module):
         # [batch, num_depth_bins + 1, depth_map_H, depth_map_W]
         depth_residual: torch.Tensor = self.depth_residual(src)
 
-        # weighted_depth = depth_utils.get_gt_depth_map_values(depth_logits, targets)
+        # weighted_depth = depth_utils.get_gt_depth_map_values(depth_logits, targets, self.depth_max)
         # num_bins = 80
         # depth_indices = depth_utils.bin_depths(weighted_depth, num_bins=num_bins, target=True)
         # # [batch, depth_map_H, depth_map_W, num_depth_bins + 1], dtype: torch.float
         # depth_logits = F.one_hot(depth_indices, num_classes=num_bins + 1).float() * 10
         # # [batch, num_depth_bins, depth_map_H, depth_map_W], dtype: torch.float
         # depth_logits = depth_logits.permute(0, 3, 1, 2)
+
+        # # gt depth residual
+        # # Bin depth map to create target
+        # depth_map_values = depth_utils.get_gt_depth_map_values(depth_logits, targets, self.depth_max)
+        # depth_target = depth_utils.bin_depths(depth_map_values, depth_min=self.depth_min, depth_max=self.depth_max, num_bins=self.num_depth_bins, target=True)
+        # # [batch, depth_map_H, depth_map_W]
+        # weighted_depth_target = self.depth_bin_values[depth_target]
+        # assert depth_map_values.shape == weighted_depth_target.shape
+        # depth_residual_target = depth_map_values - weighted_depth_target
+        # depth_probs = F.softmax(depth_logits, dim=1)
+        # # [batch, depth_map_H, depth_map_W]
+        # weighted_depth = torch.einsum('bchw,c->bhw', depth_probs, self.depth_bin_values)
+        # weighted_depth += depth_residual_target
+        # depth_residual = depth_residual_target.unsqueeze(1).repeat(1, depth_logits.shape[1], 1, 1)
 
         depth_probs = F.softmax(depth_logits, dim=1)
         # [batch, depth_map_H, depth_map_W]

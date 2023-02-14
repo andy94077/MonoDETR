@@ -165,14 +165,19 @@ class KITTI_Dataset(data.Dataset):
 
         if self.split == 'test':
             calib = self.get_calib(index)
-            return img, calib.P2, img, info
+            return img, calib.P2, dict(), info
 
         #  ============================   get labels   ==============================
         objects = self.get_label(index)
         calib = self.get_calib(index)
+        calib_matrix = calib.P2.copy().astype(np.float32)
 
         # data augmentation for labels
         if random_flip_flag:
+            flip_left_right = np.array([[-1, 0, self.resolution[0]],
+                                        [0, 1, 0],
+                                        [0, 0, 1]], dtype=np.float32)  # [[-1, 0, W], [0, 1, 0], [0, 0, 1]]
+            calib_matrix = flip_left_right @ calib_matrix
             if self.aug_calib:
                 calib.flip(img_size)
             for object in objects:
@@ -190,6 +195,11 @@ class KITTI_Dataset(data.Dataset):
                     object.ry -= 2 * np.pi
                 if object.ry < -np.pi:
                     object.ry += 2 * np.pi
+
+        if random_crop_flag:
+            # [3, 3]
+            trans_for_calib = np.concatenate([trans, np.array([[0, 0, 1]])], axis=0, dtype=np.float32)
+            calib_matrix = trans_for_calib @ calib_matrix
 
         # labels encoding
         calibs = np.zeros((self.max_objs, 3, 4), dtype=np.float32)
@@ -304,7 +314,7 @@ class KITTI_Dataset(data.Dataset):
             if objects[i].trucation <= 0.5 and objects[i].occlusion <= 2:
                 mask_2d[i] = 1
 
-            calibs[i] = calib.P2
+            calibs[i] = calib_matrix
 
         # collect return data
         inputs = img
@@ -326,7 +336,7 @@ class KITTI_Dataset(data.Dataset):
         info = {'img_id': index,
                 'img_size': img_size,
                 'bbox_downsample_ratio': img_size / features_size}
-        return inputs, calib.P2, targets, info
+        return inputs, calib_matrix, targets, info
 
 
 if __name__ == '__main__':

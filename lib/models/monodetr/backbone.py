@@ -112,7 +112,7 @@ class Joiner(nn.Sequential):
         self.strides = backbone.strides
         self.num_channels = backbone.num_channels
 
-    def forward(self, images):
+    def forward(self, images, calibs):
         xs = self[0](images)
         out: List[NestedTensor] = []
         pos = []
@@ -121,7 +121,7 @@ class Joiner(nn.Sequential):
 
         # position encoding
         for x in out:
-            pos.append(self[1](x).to(x.tensors.dtype))
+            pos.append(self[1](x, calibs, images.shape[-2:]).to(x.tensors.dtype))
 
         return out, pos
 

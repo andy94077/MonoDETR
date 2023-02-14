@@ -699,6 +699,9 @@ def build(model_cfg, loss_cfg):
         matcher=matcher,
         weight_dict=weight_dict,
         focal_alpha=loss_cfg['focal_alpha'],
-        losses=loss_cfg['losses'])
+        losses=loss_cfg['losses'],
+        depth_min=model_cfg['depth_min'],
+        depth_max=model_cfg['depth_max'],
+        num_depth_bins=model_cfg['num_depth_bins'])
 
     return model, criterion

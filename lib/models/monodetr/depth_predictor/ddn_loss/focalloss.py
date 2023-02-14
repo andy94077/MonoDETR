@@ -72,7 +72,7 @@ def regression_focal_loss(
         logit: logits tensor with shape :math:`(N, C, *)` where C = number of classes.
         input: regression tensor with shape :math:`(N, C, *)` where C = number of classes.
         logit_target: labels tensor with shape :math:`(N, *)` where each value is :math:`0 ≤ targets[i] ≤ C−1`.
-        regression_target: regression tensor with shape :math:`(N, C, *)` where C = number of classes.
+        regression_target: regression tensor with shape :math:`(N, *)`.
         alpha: Weighting factor :math:`\alpha \in [0, 1]`.
         gamma: Focusing parameter :math:`\gamma >= 0`.
         norm: Specifies the p-norm of `input` and `target`: ``'l1'`` | ``'l2'``. Default: ``'l1'``.
@@ -111,9 +111,9 @@ def regression_focal_loss(
     logit_soft: torch.Tensor = F.softmax(logit, dim=1)
     input_value = input.gather(dim=1, index=logit_target.unsqueeze(1)).squeeze()
     if norm == 'l1':
-        input_norm_loss: torch.Tensor = F.l1_loss(input_value, regression_target)
+        input_norm_loss: torch.Tensor = F.l1_loss(input_value, regression_target, reduction='none')
     elif norm == 'l2':
-        input_norm_loss: torch.Tensor = F.mse_loss(input_value, regression_target)
+        input_norm_loss: torch.Tensor = F.mse_loss(input_value, regression_target, reduction='none')
     else:
         raise NotImplementedError(f'Invalid norm type "{norm}". Expected norm types are: "l1", "l2".')
 
@@ -123,7 +123,7 @@ def regression_focal_loss(
     # compute the actual focal loss
     weight = torch.pow(-logit_soft + 1.0, gamma)
 
-    focal = alpha * weight * input_norm_loss
+    focal = alpha * weight * input_norm_loss.unsqueeze(1)
     loss_tmp = torch.einsum('bc...,bc...->b...', (target_one_hot, focal))
 
     if reduction == 'none':

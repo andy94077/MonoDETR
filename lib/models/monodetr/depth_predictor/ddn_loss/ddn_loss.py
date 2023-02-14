@@ -16,7 +16,10 @@ class DDNLoss(nn.Module):
                  gamma=2.0,
                  fg_weight=13,
                  bg_weight=1,
-                 downsample_factor=1):
+                 downsample_factor=1,
+                 depth_min: float = 1e-3,
+                 depth_max: float = 60,
+                 num_depth_bins: int = 80):
         """
         Initializes DDNLoss module
         Args:
@@ -39,6 +42,10 @@ class DDNLoss(nn.Module):
         self.alpha = alpha
         self.gamma = gamma
         self.loss_func = FocalLoss(alpha=self.alpha, gamma=self.gamma, reduction="none")
+
+        self.depth_min = depth_min
+        self.depth_max = depth_max
+        self.num_depth_bins = num_depth_bins
 
     def build_target_depth_from_3dcenter(self, depth_logits, gt_boxes2d, gt_center_depth, num_gt_per_img):
         B, _, H, W = depth_logits.shape
@@ -63,7 +70,7 @@ class DDNLoss(nn.Module):
 
         return depth_maps
 
-    def bin_depths(self, depth_map, mode="LID", depth_min=1e-3, depth_max=60, num_bins=80, target=False):
+    def bin_depths(self, depth_map, mode="LID", depth_min: float = 1e-3, depth_max: float = 60, num_bins: int = 80, target=False):
         """
         Converts depth map into bin indices
         Args:
@@ -87,7 +94,7 @@ class DDNLoss(nn.Module):
             indices = -0.5 + 0.5 * torch.sqrt(1 + 8 * (depth_map - depth_min) / bin_size)
         elif mode == "SID":
             indices = num_bins * (torch.log(1 + depth_map) - math.log(1 + depth_min)) / \
-                      (math.log(1 + depth_max) - math.log(1 + depth_min))
+                (math.log(1 + depth_max) - math.log(1 + depth_min))
         else:
             raise NotImplementedError
 
@@ -115,7 +122,7 @@ class DDNLoss(nn.Module):
 
         # Bin depth map to create target
         depth_maps = self.build_target_depth_from_3dcenter(depth_logits, gt_boxes2d, gt_center_depth, num_gt_per_img)
-        depth_target = self.bin_depths(depth_maps, target=True)
+        depth_target = self.bin_depths(depth_maps, depth_min=self.depth_min, depth_max=self.depth_max, num_bins=self.num_depth_bins, target=True)
 
         # Compute loss
         loss = self.loss_func(depth_logits, depth_target)

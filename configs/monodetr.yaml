@@ -41,7 +41,7 @@ model:
   mode: LID
   num_depth_bins: 80
   depth_min: 1e-3
-  depth_max: 60.0
+  depth_max: &depth_max 60.0
   with_depth_residual: True
 
   # Transformer
@@ -92,7 +92,7 @@ loss:
       loss_center,
       loss_cls,
       loss_depth,
-      loss_depth_map,
+      # loss_depth_map,
       # loss_depth_map_residual,
       loss_depth_map_with_residual,
       loss_dim,
@@ -109,7 +109,7 @@ loss:
     loss_cls: 2 # classification
     loss_depth: 1
     loss_depth_map: 1 # DDN loss
-    loss_depth_residual: 0.1
+    loss_depth_residual: 5
     loss_dim: 1
     loss_giou: 2 # 3D boxes to 2D boxes IoU
     loss_rdiou: 2
@@ -152,3 +152,4 @@ tester:
   checkpoint: 195 # the start ckpt epoch for 'all'
   threshold: 0.2 # confidence filter
   topk: 50
+  depth_max: *depth_max

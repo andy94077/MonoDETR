@@ -68,7 +68,7 @@ class DepthPredictor(nn.Module):
         depth_logits = self.depth_classifier(src)
 
         # gt depth_map + weighted_depth
-        # weighted_depth = depth_utils.get_gt_depth_map_values(depth_logits, targets)
+        # weighted_depth = depth_utils.get_gt_depth_map_values(depth_logits, targets, self.depth_max)
         # num_bins = 80
         # depth_indices = depth_utils.bin_depths(weighted_depth, num_bins=num_bins, target=True)
         # # [batch, depth_map_H, depth_map_W, num_depth_bins], dtype: torch.float
@@ -77,7 +77,7 @@ class DepthPredictor(nn.Module):
         # depth_logits = depth_logits.permute(0, 3, 1, 2)
 
         # gt depth_map
-        # weighted_depth = depth_utils.get_gt_depth_map_values(depth_logits, targets)
+        # weighted_depth = depth_utils.get_gt_depth_map_values(depth_logits, targets, self.depth_max)
         # num_bins = 80
         # depth_indices = depth_utils.bin_depths(weighted_depth, num_bins=num_bins, target=True)
         # # [batch, depth_map_H, depth_map_W, num_depth_bins], dtype: torch.float

@@ -153,8 +153,7 @@ class MonoDETR(nn.Module):
             * pred_depth_map_logits: predicted depth map logits with shape
                 [batch, num_depth_bins, H, W].
         """
-
-        features, pos = self.backbone(images)
+        features, pos = self.backbone(images, calibs)
 
         srcs = []
         masks = []
@@ -173,7 +172,7 @@ class MonoDETR(nn.Module):
                     src = self.input_proj[lvl](srcs[-1])
                 m = torch.zeros(src.shape[0], src.shape[2], src.shape[3]).to(torch.bool).to(src.device)
                 mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
-                pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
+                pos_l = self.backbone[1](NestedTensor(src, mask), calibs, images.shape[-2:]).to(src.dtype)
                 srcs.append(src)
                 masks.append(mask)
                 pos.append(pos_l)
@@ -700,6 +699,9 @@ def build(model_cfg, loss_cfg):
         matcher=matcher,
         weight_dict=weight_dict,
         focal_alpha=loss_cfg['focal_alpha'],
-        losses=loss_cfg['losses'])
+        losses=loss_cfg['losses'],
+        depth_min=model_cfg['depth_min'],
+        depth_max=model_cfg['depth_max'],
+        num_depth_bins=model_cfg['num_depth_bins'])
 
     return model, criterion

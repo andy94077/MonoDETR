@@ -11,8 +11,9 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from lib.helpers.dataloader_helper import prepare_targets
 from lib.helpers.save_helper import load_checkpoint
-from lib.helpers.decode_helper import extract_dets_from_outputs
-from lib.helpers.decode_helper import decode_detections
+# from lib.helpers.decode_helper import extract_dets_from_outputs
+# from lib.helpers.decode_helper import decode_detections
+from lib.models.monodetr.monodetr import MonoDETR
 import time
 
 from utils import depth_utils
@@ -21,7 +22,7 @@ from utils import depth_utils
 class Tester(object):
     def __init__(self,
                  cfg,
-                 model: nn.Module,
+                 model,
                  dataloader: DataLoader,
                  logger: logging.Logger,
                  device: torch.device,
@@ -120,20 +121,21 @@ class Tester(object):
             end_time = time.time()
             model_infer_time += end_time - start_time
 
-            dets = extract_dets_from_outputs(outputs=outputs, topk=self.cfg['topk'])
+            # dets = extract_dets_from_outputs(outputs=outputs, topk=self.cfg['topk'])
 
-            dets = dets.detach().cpu().numpy()
+            # dets = dets.detach().cpu().numpy()
 
             # get corresponding calibs & transform tensor to numpy
             calibs = [self.dataloader.dataset.get_calib(index) for index in info['img_id']]
             info = {key: val.detach().cpu().numpy() for key, val in info.items()}
             cls_mean_size = self.dataloader.dataset.cls_mean_size
-            dets = decode_detections(
-                dets=dets,
-                info=info,
-                calibs=calibs,
-                cls_mean_size=cls_mean_size,
-                threshold=self.cfg.get('threshold', 0.2))
+            # dets = decode_detections(
+            #     dets=dets,
+            #     info=info,
+            #     calibs=calibs,
+            #     cls_mean_size=cls_mean_size,
+            #     threshold=self.cfg.get('threshold', 0.2))
+            dets = self.model.module.bbox_coder.decode(outputs, info, calibs, cls_mean_size, self.cfg.get('threshold', 0.2))
 
             results.update(dets)
 

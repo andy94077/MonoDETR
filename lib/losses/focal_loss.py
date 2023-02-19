@@ -1,3 +1,4 @@
+from typing import Literal
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -66,7 +67,7 @@ def focal_loss_cornernet(input, target, gamma=2.):
     return loss.mean()
 
 
-def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: float = 2):
+def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: float = 2, reduction: Literal['mean', 'sum', 'none'] = 'mean'):
     """
     Loss used in RetinaNet for dense detection: https://arxiv.org/abs/1708.02002.
     Args:
@@ -91,4 +92,12 @@ def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: f
         alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
         loss = alpha_t * loss
 
-    return loss.mean(1).sum() / num_boxes
+    loss /= num_boxes
+    if reduction == 'none':
+        return loss
+    elif reduction == 'sum':
+        return loss.sum()
+    elif reduction == 'mean':
+        return loss.mean()
+    else:
+        raise NotImplementedError(f"Invalid reduction mode: {reduction}")

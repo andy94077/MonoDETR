@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Literal
 import numpy as np
 import torch
 import torch.nn as nn
@@ -19,6 +19,12 @@ class BBoxCoder:
         dets = dets.detach().cpu().numpy()
         results = self.decode_detections(dets, info, calibs, cls_mean_size, threshold)
         return results
+
+    def get_heading_angle(self, heading):
+        heading_bin, heading_res = heading[0:12], heading[12:24]
+        heading_cls = heading_bin.argmax()
+        res = heading_res[heading_cls]
+        return class2angle(heading_cls, res, to_label_format=True)
 
     def decode_detections(self,
                           dets: np.ndarray,
@@ -65,7 +71,7 @@ class BBoxCoder:
                 locations[1] += dimensions[0] / 2
 
                 # heading angle decoding
-                alpha = get_heading_angle(dets[i, j, 7:31])
+                alpha = self.get_heading_angle(dets[i, j, 7:31])
                 ry = calibs[i].alpha2ry(alpha, x)
 
                 score = score * dets[i, j, -1]
@@ -129,7 +135,161 @@ class BBoxCoder:
         return detections
 
 
+def decode_detections(detections: List[Dict[str, np.ndarray]],
+                      info: Dict[str, np.ndarray],
+                      calibs: List[Calibration],
+                      cls_mean_size: np.ndarray,
+                      threshold: float,
+                      ) -> Dict[str, np.ndarray]:
+    '''Decodes list of detection dicts into KITTI format.
+    NOTE: THIS IS A NUMPY FUNCTION
+    
+    detections: List of array dicts with keys:
+        * labels: [num_boxes, 1]
+        * scores: [num_boxes, 1]
+        * x_2d: [num_boxes, 1]
+        * y_2d: [num_boxes, 1]
+        * w: [num_boxes, 1]
+        * h: [num_boxes, 1]
+        * size_3d: [num_boxes, 3]
+        * x_3d: [num_boxes, 1]
+        * y_3d: [num_boxes, 1]
+        * depth: [num_boxes, 2]
+        * alpha_angle: [num_boxes, 1]
+    info: img info with keys:
+        * img_size
+        * img_id
+    calibs: corresponding calibs for the input batch
+    cls_mean_size: ndarray with shape [C, 3], where C is the number of classes
+    output:
+    '''
+    results = {}
+    for detection, img_size, img_id, calib in zip(detections, info['img_size'], info['img_id'], calibs):
+        mask = (detection['scores'] >= threshold).squeeze()
+        if np.all(~mask):
+            results[img_id] = []
+            continue
+
+        detection = {key: val[mask] for key, val in detection.items()}
+
+        labels = detection['labels'].astype(np.int32)
+        scores = detection['scores']
+
+        x_2d = detection['x_2d'] * img_size[0]
+        y_2d = detection['y_2d'] * img_size[1]
+        w = detection['w'] * img_size[0]
+        h = detection['h'] * img_size[1]
+        bbox = np.concatenate([x_2d - w / 2, y_2d - h / 2, x_2d + w / 2, y_2d + h / 2], axis=-1)
+
+        size_3d = detection['size_3d'] + cls_mean_size[labels.ravel()]
+
+        x_3d = detection['x_3d'] * img_size[0]
+        y_3d = detection['y_3d'] * img_size[1]
+        depth = detection['depth']
+        locations = calib.img_to_rect(x_3d, y_3d, depth)
+        locations[:, 1] += size_3d[:, 0] / 2
+
+        alpha_angle = detection['alpha_angle']
+        ry = calib.alpha2ry(alpha_angle, x_2d)
+
+        preds = np.concatenate([labels,
+                                alpha_angle,
+                                bbox,
+                                size_3d,
+                                locations,
+                                ry,
+                                scores], axis=-1)
+        results[img_id] = preds.tolist()
+    return results
+
+
+class OQDDBBoxCoder:
+    def decode(self,
+               outputs: Dict[str, torch.Tensor],
+               info: Dict[str, np.ndarray],
+               calibs: List[Calibration],
+               cls_mean_size: np.ndarray,
+               threshold: float = 0.2,
+               topk: int = 50) -> Dict[str, np.ndarray]:
+        dets = self.extract_dets_from_outputs(outputs, topk)
+        # dict of arrays to list of dicts
+        dets = [dict(zip(dets.keys(), arrays)) for arrays in zip(*dets.values())]
+        results = decode_detections(dets, info, calibs, cls_mean_size, threshold)
+        return results
+
+    def get_heading_angle(self, heading: torch.Tensor) -> torch.Tensor:
+        """Gets heading angle from bins and residuals.
+
+        Args:
+            heading: A tensor with shape [*, 24].
+
+        Returns:
+            A tensor with shape [*, 1] of angles in [-pi, pi].
+        """
+        heading_bin, heading_res = heading[..., :12], heading[..., 12:]
+        heading_class = heading_bin.argmax(-1, keepdim=True)
+        heading_residual = heading_res.gather(dim=-1, index=heading_class)
+        return class2angle(heading_class, heading_residual, to_label_format=True)
+
+    def extract_dets_from_outputs(self, outputs: Dict[str, torch.Tensor], topk: int = 50) -> Dict[str, np.ndarray]:
+        detections: Dict[str, torch.Tensor] = {}
+
+        # b, q, c
+        out_logits = outputs['pred_logits']
+        prob = out_logits.sigmoid()
+        # [batch, num_boxes * num_classes]
+        topk_values, topk_indexes = torch.topk(prob.flatten(1), topk, dim=1)
+
+        # final indexes [batch, topk, 1]
+        topk_box_indexes = (topk_indexes // out_logits.shape[2]).unsqueeze(-1)
+
+        # final labels [batch, topk, 1]
+        labels = (topk_indexes % out_logits.shape[2]).unsqueeze(-1)
+        detections['labels'] = labels
+
+        # [batch, topk, 1]
+        heading = self.get_heading_angle(outputs['pred_angle'])
+        detections['alpha_angle'] = heading.gather(1, topk_box_indexes)
+        # [batch, topk, 3]
+        detections['size_3d'] = outputs['pred_3d_dim'].gather(1, topk_box_indexes.repeat(1, 1, 3))
+
+        # final depth [batch, topk, 2]
+        pred_depth = outputs['pred_depth'].gather(1, topk_box_indexes.repeat(1, 1, 2))
+        detections['depth'] = pred_depth[:, :, 0:1]
+
+        depth_score = pred_depth[:, :, 1:2]
+        # final scores [batch, topk, 1]
+        # scores = topk_values.unsqueeze(-1) * depth_score
+        # detections['scores'] = scores
+        detections['scores'] = topk_values.unsqueeze(-1)
+
+        # [batch, topk, 6]
+        boxes = torch.gather(outputs['pred_boxes'], 1, topk_box_indexes.repeat(1, 1, 6))
+
+        detections['x_3d'] = boxes[:, :, 0:1]
+        detections['y_3d'] = boxes[:, :, 1:2]
+
+        corner_2d = box_ops.box_cxcylrtb_to_xyxy(boxes)
+
+        xywh_2d = box_ops.box_xyxy_to_cxcywh(corner_2d)
+        detections['x_2d'], detections['y_2d'], detections['w'], detections['h'] = xywh_2d.split(1, dim=-1)
+
+        detection_dict_numpy = {key: tensor.detach().cpu().numpy() for key, tensor in detections.items()}
+        return detection_dict_numpy
+
+
+_AVAILABLE_BBOX_CODERS = {
+    'BBoxCoder': BBoxCoder,
+    'OQDDBBoxCoder': OQDDBBoxCoder,
+}
+
+
 def build_bbox_coder(cfg):
+    if 'bbox_coder' in cfg:
+        bbox_coder_type: str = cfg['bbox_coder'].pop('type', 'BBoxCoder')
+        assert bbox_coder_type in _AVAILABLE_BBOX_CODERS, (
+            f'Invalid bbox_coder type {bbox_coder_type}. Supported bbox_coder types are {list(_AVAILABLE_BBOX_CODERS.keys())}.')
+        return _AVAILABLE_BBOX_CODERS[bbox_coder_type](**cfg['bbox_coder'])
     return BBoxCoder()
 ############### auxiliary function ############
 
@@ -191,10 +351,3 @@ def _transpose_and_gather_feat(feat, ind):
     feat = feat.view(feat.size(0), -1, feat.size(3))   # B * H * W * C ---> B * (H*W) * C
     feat = _gather_feat(feat, ind)     # B * len(ind) * C
     return feat
-
-
-def get_heading_angle(heading):
-    heading_bin, heading_res = heading[0:12], heading[12:24]
-    cls = np.argmax(heading_bin)
-    res = heading_res[cls]
-    return class2angle(cls, res, to_label_format=True)

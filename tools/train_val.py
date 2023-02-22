@@ -53,6 +53,7 @@ def main(args):
 
     # build model
     model, loss = build_model(cfg['model'], cfg['loss'])
+    logger.info(f'model name: {model._get_name()}')
     device = torch.device("cuda", index=misc.get_rank())
     model, loss = model.to(device), loss.to(device)
 

@@ -276,10 +276,7 @@ class Calibration(object):
         """
         ry = alpha + np.arctan2(u - self.cu, self.fu)
 
-        if ry > np.pi:
-            ry -= 2 * np.pi
-        if ry < -np.pi:
-            ry += 2 * np.pi
+        ry = ry % (2 * np.pi) - np.pi
 
         return ry
 

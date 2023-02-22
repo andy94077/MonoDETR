@@ -1,10 +1,7 @@
 ''' some auxiliary functions for all datasets '''
-from typing import TypeVar
 import numpy as np
 import cv2
-import torch
 
-T = TypeVar('T', float, np.ndarray, torch.Tensor)
 
 num_heading_bin = 12  # hyper param
 
@@ -20,7 +17,7 @@ def angle2class(angle):
     return class_id, residual_angle
 
 
-def class2angle(cls: T, residual: T, to_label_format=False) -> T:
+def class2angle(cls, residual, to_label_format=False):
     ''' Inverse function to angle2class. '''
     angle_per_class = 2 * np.pi / float(num_heading_bin)
     angle_center = cls * angle_per_class

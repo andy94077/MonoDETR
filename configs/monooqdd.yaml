@@ -23,10 +23,14 @@ dataset:
   scale: 0.05
   shift: 0.05
 
-model_name: "monodetr_rdiou_giou_matched_targets_depth_ave_depth_residual_supervised_l2_7"
+model_name: "monooqdd_rdiou_giou_matched_targets_depth_ave_depth_residual_supervised"
+# model_name: "block"
+# model_name: "monodetr_rdiou_giou_matched_targets_depth_ave_depth_residual_sigmoid_supervised_l2"
+# model_name: "monodetr_rdiou_giou_matched_targets_depth_ave_pretrained"
+# model_name: "monodetr_rdiou_giou_matched_targets_depth_ave_gt_depth_map_only"
 
 model:
-  type: MonoDETR
+  type: MonoOQDD
   num_classes: 3
   return_intermediate_dec: True
 
@@ -87,7 +91,7 @@ model:
     cost_rdiou: 2
   
   bbox_coder:
-    type: BBoxCoder
+    type: OQDDBBoxCoder
 
 
 loss:
@@ -96,7 +100,8 @@ loss:
       loss_bbox,
       loss_center,
       loss_cls,
-      loss_depth,
+      # loss_depth,
+      loss_depth_oqdd,
       # loss_depth_map,
       # loss_depth_map_residual,
       loss_depth_map_with_residual,
@@ -113,6 +118,7 @@ loss:
     loss_center: 10 # 3D center
     loss_cls: 2 # classification
     loss_depth: 1
+    loss_depth_oqdd: 1
     loss_depth_map: 1 # DDN loss
     loss_depth_residual: 5
     loss_dim: 1

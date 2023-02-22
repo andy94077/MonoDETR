@@ -10,6 +10,7 @@ import torch.distributed as dist
 import math
 import copy
 from lib.datasets.utils import class2angle
+from lib.models.monodetr.depth_predictor.ddn_loss.focalloss import focal_loss, regression_focal_loss
 
 from utils import box_ops, depth_utils, misc
 from utils.misc import (NestedTensor, nested_tensor_from_tensor_list,
@@ -34,7 +35,7 @@ class MonoOQDD(nn.Module):
     """ This is the Mono Object Query Depth Distribution module that performs monocualr 3D object detection """
 
     def __init__(self, backbone, depthaware_transformer, depth_predictor, bbox_coder, num_classes, num_queries, num_feature_levels,
-                 num_depth_bins,
+                 depth_min, depth_max, num_depth_bins,
                  aux_loss=True, with_box_refine=False, with_depth_residual=True, two_stage=False, init_box=False):
         """ Initializes the model.
         Parameters:
@@ -56,6 +57,7 @@ class MonoOQDD(nn.Module):
         self.bbox_coder = bbox_coder
         hidden_dim = depthaware_transformer.d_model
         self.num_feature_levels = num_feature_levels
+        self.num_depth_bins = num_depth_bins
 
         # prediction heads
         self.class_embed = nn.Linear(hidden_dim, num_classes)
@@ -66,7 +68,11 @@ class MonoOQDD(nn.Module):
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 6, 3)  # [3d_cx, 3d_cy, l, r, t, b]
         self.dim_embed_3d = MLP(hidden_dim, hidden_dim, 3, 2)  # [h, w, l] - mean_size
         self.angle_embed = MLP(hidden_dim, hidden_dim, 24, 2)  # 12 classes + 12 offset for each classes
-        self.depth_embed = MLP(hidden_dim, hidden_dim, num_depth_bins * 2, 2)  # `num_depth_bins` classes + `num_depth_bins` offset for each depth class
+        self.depth_embed = MLP(hidden_dim, hidden_dim, (num_depth_bins + 1) * 2, 2)  # (`num_depth_bins` + 1) classes + (`num_depth_bins` + 1) offset for each depth class
+        self.depth_bin_values = nn.parameter.Parameter(
+            depth_utils.get_depth_bin_values(depth_min, depth_max, num_depth_bins),
+            requires_grad=False)
+
         self.depth_ave_layer = nn.Linear(3, 1)
         nn.init.constant_(self.depth_ave_layer.weight, 1 / 3)
         nn.init.zeros_(self.depth_ave_layer.bias)
@@ -200,6 +206,8 @@ class MonoOQDD(nn.Module):
         outputs_classes = []
         outputs_3d_dims = []
         outputs_depths = []
+        outputs_depth_logits = []
+        outputs_depth_residuals = []
         outputs_angles = []
 
         for lvl in range(hs.shape[0]):
@@ -234,10 +242,17 @@ class MonoOQDD(nn.Module):
             depth_geo = size3d[:, :, 0] / box2d_height * calibs[:, 0, 0].unsqueeze(1)
 
             # depth_reg
-            depth_reg = self.depth_embed[lvl](hs[lvl])
+            depth_reg: torch.Tensor = self.depth_embed[lvl](hs[lvl])
+            depth_reg_logit, depth_reg_residual = depth_reg[..., :self.num_depth_bins + 1], depth_reg[..., self.num_depth_bins + 1:]
+            depth_score, _ = depth_reg_logit.softmax(-1).max(-1, keepdim=True)
+            depth_reg = self.depth_bin_values[depth_reg_logit.argmax(-1)] + depth_reg_residual.gather(dim=-1, index=depth_reg_logit.argmax(-1, keepdim=True)).squeeze()
+            outputs_depth_logits.append(depth_reg_logit)
+            outputs_depth_residuals.append(depth_reg_residual)
 
             # depth_map
+            # [batch, num_boxes, 1, 2]
             outputs_center3d = ((outputs_coord[..., :2] - 0.5) * 2).unsqueeze(2).detach()
+            # [batch, 1, num_boxes, 1] -> [batch, num_boxes, 1]
             depth_map = F.grid_sample(
                 weighted_depth.unsqueeze(1),
                 outputs_center3d,
@@ -245,30 +260,30 @@ class MonoOQDD(nn.Module):
                 align_corners=True).squeeze(1)
 
             # depth average + sigma
-            # depth_ave = ((1. / (depth_reg[:, :, 0: 1].sigmoid() + 1e-6) - 1.) + depth_geo.unsqueeze(-1) + depth_map) / 3
-            depth_ave = self.depth_ave_layer(torch.cat([(1. / (depth_reg[:, :, 0: 1].sigmoid() + 1e-6) - 1.), depth_geo.unsqueeze(-1), depth_map], dim=-1))
-            depth_ave = torch.cat([depth_ave, depth_reg[:, :, 1: 2]], -1)
+            depth_ave = self.depth_ave_layer(torch.cat([depth_reg.unsqueeze(-1), depth_geo.unsqueeze(-1), depth_map], dim=-1))
+            depth_ave = torch.cat([depth_ave, depth_score], -1)
             outputs_depths.append(depth_ave)
 
             # angles
             outputs_angle = self.angle_embed[lvl](hs[lvl])
             outputs_angles.append(outputs_angle)
 
-        outputs_coord = torch.stack(outputs_coords)
-        outputs_class = torch.stack(outputs_classes)
-        outputs_3d_dim = torch.stack(outputs_3d_dims)
-        outputs_depth = torch.stack(outputs_depths)
-        outputs_angle = torch.stack(outputs_angles)
-
-        out['pred_logits'] = outputs_class[-1]
-        out['pred_boxes'] = outputs_coord[-1]
-        out['pred_3d_dim'] = outputs_3d_dim[-1]
-        out['pred_depth'] = outputs_depth[-1]
-        out['pred_angle'] = outputs_angle[-1]
+        object_detection_dict = {
+            'pred_logits': outputs_classes,
+            'pred_boxes': outputs_coords,
+            'pred_3d_dim': outputs_3d_dims,
+            'pred_depth': outputs_depths,
+            'pred_depth_logits': outputs_depth_logits,
+            'pred_depth_residual': outputs_depth_residuals,
+            'pred_angle': outputs_angles,
+        }
+        aux_dict = {}
+        for key, tensor_list in object_detection_dict.items():
+            out[key] = tensor_list[-1]
+            aux_dict[key] = tensor_list[:-1]
 
         if self.aux_loss:
-            out['aux_outputs'] = self._set_aux_loss(
-                outputs_class, outputs_coord, outputs_3d_dim, outputs_angle, outputs_depth)
+            out['aux_outputs'] = self._set_aux_loss(aux_dict)
 
         if self.two_stage:
             enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
@@ -276,14 +291,11 @@ class MonoOQDD(nn.Module):
         return out
 
     @torch.jit.unused
-    def _set_aux_loss(self, outputs_class, outputs_coord, outputs_3d_dim, outputs_angle, outputs_depth) -> List[Dict[str, torch.Tensor]]:
+    def _set_aux_loss(self, aux_dict) -> List[Dict[str, torch.Tensor]]:
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
-        return [{'pred_logits': a, 'pred_boxes': b,
-                 'pred_3d_dim': c, 'pred_angle': d, 'pred_depth': e}
-                for a, b, c, d, e in zip(outputs_class[:-1], outputs_coord[:-1],
-                                         outputs_3d_dim[:-1], outputs_angle[:-1], outputs_depth[:-1])]
+        return [dict(zip(aux_dict.keys(), tensors)) for tensors in zip(*aux_dict.values())]
 
 
 class SetCriterion(nn.Module):
@@ -422,26 +434,33 @@ class SetCriterion(nn.Module):
         depth_loss = depth_loss.sum() / num_boxes
         return depth_loss
 
-    def loss_depth_oqdd(self, outputs, targets, indices, num_boxes, **kwargs) -> torch.Tensor:
+    def loss_depth_oqdd(self, outputs, targets, indices, num_boxes, **kwargs) -> Dict[str, torch.Tensor]:
         matched_outputs, matched_targets = kwargs['matched_outputs'], kwargs['matched_targets']
+        # [num_boxes, `self.num_depth_bins` + 1]
         src_depth_logit = matched_outputs['pred_depth_logits']
+        # [num_boxes, `self.num_depth_bins` + 1]
         src_depth_residual = matched_outputs['pred_depth_residual']
 
         target_depths = matched_targets['depth'].squeeze()
+        # [num_boxes]
         target_depth_classes = depth_utils.bin_depths(target_depths, depth_min=self.depth_min, depth_max=self.depth_max, num_bins=self.num_depth_bins, target=True)
         target_weighted_depth = self.depth_bin_values[target_depth_classes]
+        # [num_boxes]
         target_depth_residual = target_depths - target_weighted_depth
 
-        # [batch, num_boxes, `self.num_depth_bins`` + 1]
-        target_depth_classes_onehot = F.one_hot(target_depth_classes, num_classes=self.num_depth_bins + 1)
-        cls_loss = sigmoid_focal_loss(src_depths, target_depth_classes_onehot, num_boxes=num_boxes, alpha=self.focal_alpha, reduction='sum')
+        cls_loss = focal_loss(src_depth_logit, target_depth_classes, alpha=self.focal_alpha, reduction='sum') / num_boxes
+        reg_loss = regression_focal_loss(src_depth_logit, src_depth_residual, target_depth_classes, target_depth_residual,
+                                         alpha=self.focal_alpha, reduction='sum') / num_boxes
 
-        depth_input, depth_log_variance = src_depths[:, 0], src_depths[:, 1]
-        depth_loss = 1.4142 * torch.exp(-depth_log_variance) * torch.abs(depth_input - target_depths) + depth_log_variance
-        # depth_loss = depth_loss * torch.pow(1 - torch.exp(-torch.exp(depth_log_variance)), 2)
-        depth_loss = depth_loss.sum() / num_boxes
-        return depth_loss
+        src_depths = matched_outputs['pred_depth']
+        target_depths = matched_targets['depth'].squeeze()
 
+        depth_loss = F.l1_loss(src_depths[..., 0], target_depths, reduction='sum') / num_boxes
+        return {
+            'loss_depth': depth_loss,
+            'loss_oqdd_cls': cls_loss,
+            'loss_oqdd_reg': reg_loss,
+        }
 
     def loss_dims(self, outputs, targets, indices, num_boxes, **kwargs) -> torch.Tensor:
         matched_outputs, matched_targets = kwargs['matched_outputs'], kwargs['matched_targets']
@@ -572,6 +591,7 @@ class SetCriterion(nn.Module):
             'loss_depth_map': self.loss_depth_map,
             'loss_depth_map_residual': self.loss_depth_map_residual,
             'loss_depth_map_with_residual': self.loss_depth_map_with_residual,
+            'loss_depth_oqdd': self.loss_depth_oqdd,
         }
 
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
@@ -604,7 +624,15 @@ class SetCriterion(nn.Module):
             len(matched_outputs[key_i]) = len(matched_targets[key_j]) = num_boxes_among_whole_batch for any key_i, key_j.
         """
         idx = self._get_src_permutation_idx(indices)
-        keys_to_match = ['pred_logits', 'pred_boxes', 'pred_3d_dim', 'pred_depth', 'pred_angle']
+        keys_to_match = [
+            'pred_3d_dim',
+            'pred_angle',
+            'pred_boxes',
+            'pred_depth',
+            'pred_depth_logits',
+            'pred_depth_residual',
+            'pred_logits',
+        ]
         matched_outputs = {k: outputs[k][idx] for k in keys_to_match}
         matched_targets = {k: torch.cat([target[k][i] for target, (_, i) in zip(targets, indices)], dim=0)
                            for k in targets[0]}
@@ -693,11 +721,14 @@ def build(model_cfg, loss_cfg):
     depth_predictor = build_depth_predictor(model_cfg)
 
     bbox_coder = build_bbox_coder(model_cfg)
-    model = MonoDETR(
+    model = MonoOQDD(
         backbone,
         depthaware_transformer,
         depth_predictor,
         bbox_coder,
+        depth_min=model_cfg['depth_min'],
+        depth_max=model_cfg['depth_max'],
+        num_depth_bins=model_cfg['num_depth_bins'],
         num_classes=model_cfg['num_classes'],
         num_queries=model_cfg['num_queries'],
         aux_loss=loss_cfg['aux_loss'],

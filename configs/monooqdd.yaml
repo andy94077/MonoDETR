@@ -118,7 +118,8 @@ loss:
     loss_center: 10 # 3D center
     loss_cls: 2 # classification
     loss_depth: 1
-    loss_depth_oqdd: 1
+    loss_oqdd_cls: 1
+    loss_oqdd_reg: 1
     loss_depth_map: 1 # DDN loss
     loss_depth_residual: 5
     loss_dim: 1

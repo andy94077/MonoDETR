@@ -98,8 +98,10 @@ loss:
       loss_cls,
       loss_depth,
       # loss_depth_map,
-      # loss_depth_map_residual,
-      loss_depth_map_with_residual,
+      loss_depth_map_residual,
+      # loss_depth_map_with_residual,
+      loss_depth_debug,
+      loss_weighted_depth,
       loss_dim,
       loss_giou,
       loss_rdiou,
@@ -114,7 +116,11 @@ loss:
     loss_cls: 2 # classification
     loss_depth: 1
     loss_depth_map: 1 # DDN loss
-    loss_depth_residual: 5
+    loss_depth_residual: 0
+    debug_loss_depth_geo: 0
+    debug_loss_depth_reg: 0
+    debug_loss_depth_map: 0
+    loss_weighted_depth: 0.1
     loss_dim: 1
     loss_giou: 2 # 3D boxes to 2D boxes IoU
     loss_rdiou: 2

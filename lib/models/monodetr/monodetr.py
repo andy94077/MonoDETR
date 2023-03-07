@@ -20,7 +20,7 @@ from .backbone import build_backbone
 from .matcher import build_matcher
 from .depthaware_transformer import build_depthaware_transformer
 from .depth_predictor import build_depth_predictor
-from .depth_predictor.ddn_loss import DDNLoss, DDNWithResidualLoss
+from .depth_predictor.ddn_loss import DDNLoss, DDNWithResidualLoss, DDNWithWeightedDepthLoss
 from lib.losses.focal_loss import sigmoid_focal_loss
 from lib.losses.RDIoU import rdiou, box_dict_to_xyzlwht
 from lib.helpers.decode_helper import build_bbox_coder
@@ -66,8 +66,8 @@ class MonoDETR(nn.Module):
         self.dim_embed_3d = MLP(hidden_dim, hidden_dim, 3, 2)  # [h, w, l] - mean_size
         self.angle_embed = MLP(hidden_dim, hidden_dim, 24, 2)  # 12 classes + 12 offset for each classes
         self.depth_embed = MLP(hidden_dim, hidden_dim, 2, 2)  # depth and deviation
-        self.depth_ave_layer = nn.Linear(3, 1)
-        nn.init.constant_(self.depth_ave_layer.weight, 1 / 3)
+        self.depth_ave_layer = nn.Linear(2, 1)
+        nn.init.constant_(self.depth_ave_layer.weight, 1 / 2)
         nn.init.zeros_(self.depth_ave_layer.bias)
 
         if init_box:
@@ -191,6 +191,7 @@ class MonoDETR(nn.Module):
         else:
             pred_depth_map_logits, depth_pos_embed, weighted_depth = self.depth_predictor(srcs, masks[1], pos[1], targets)
         out['pred_depth_map_logits'] = pred_depth_map_logits
+        out['weighted_depth'] = weighted_depth
 
         hs, init_reference, inter_references, inter_references_dim, enc_outputs_class, enc_outputs_coord_unact = self.depthaware_transformer(
             srcs, masks, pos, query_embeds, depth_pos_embed)
@@ -245,7 +246,12 @@ class MonoDETR(nn.Module):
 
             # depth average + sigma
             # depth_ave = ((1. / (depth_reg[:, :, 0: 1].sigmoid() + 1e-6) - 1.) + depth_geo.unsqueeze(-1) + depth_map) / 3
-            depth_ave = self.depth_ave_layer(torch.cat([(1. / (depth_reg[:, :, 0: 1].sigmoid() + 1e-6) - 1.), depth_geo.unsqueeze(-1), depth_map], dim=-1))
+            # depth_ave = self.depth_ave_layer(torch.cat([(1. / (depth_reg[:, :, 0: 1].sigmoid() + 1e-6) - 1.), depth_geo.unsqueeze(-1), depth_map], dim=-1))
+            depth_ave = self.depth_ave_layer(torch.cat([(1. / (depth_reg[:, :, 0: 1].sigmoid() + 1e-6) - 1.), depth_map], dim=-1))
+            if lvl == hs.shape[0] - 1:
+                out['debug_depth_reg'] = 1. / (depth_reg[:, :, 0].sigmoid() + 1e-6) - 1.
+                out['debug_depth_geo'] = depth_geo
+                out['debug_depth_map'] = depth_map.squeeze()
             depth_ave = torch.cat([depth_ave, depth_reg[:, :, 1: 2]], -1)
             outputs_depths.append(depth_ave)
 
@@ -332,6 +338,10 @@ class SetCriterion(nn.Module):
                                                           depth_min=self.depth_min,
                                                           depth_max=self.depth_max,
                                                           num_depth_bins=self.num_depth_bins)  # for depth map with residual
+        self.ddn_with_weighted_depth_loss = DDNWithWeightedDepthLoss(alpha=self.focal_alpha,
+                                                                     depth_min=self.depth_min,
+                                                                     depth_max=self.depth_max,
+                                                                     num_depth_bins=self.num_depth_bins)  # for depth map with residual
 
     def loss_labels(self, outputs, targets, indices, num_boxes, **kwargs) -> torch.Tensor:
         """Classification loss (Binary focal loss)
@@ -420,6 +430,28 @@ class SetCriterion(nn.Module):
         # depth_loss = depth_loss * torch.pow(1 - torch.exp(-torch.exp(depth_log_variance)), 2)
         depth_loss = depth_loss.sum() / num_boxes
         return depth_loss
+
+    @torch.no_grad()
+    def loss_depth_debug(self,
+                         outputs: Dict[str, torch.Tensor],
+                         targets: List[Dict[str, torch.Tensor]],
+                         indices: List[Tuple[torch.Tensor, torch.Tensor]],
+                         num_boxes: int,
+                         **kwargs) -> Dict[str, torch.Tensor]:
+        matched_outputs, matched_targets = kwargs['matched_outputs'], kwargs['matched_targets']
+        depth_geo = matched_outputs['debug_depth_geo']
+        depth_reg = matched_outputs['debug_depth_reg']
+        depth_map = matched_outputs['debug_depth_map']
+        target_depths = matched_targets['depth'].squeeze()
+
+        geo_loss = F.l1_loss(depth_geo, target_depths, reduction='sum') / num_boxes
+        reg_loss = F.l1_loss(depth_reg, target_depths, reduction='sum') / num_boxes
+        depth_map_loss = F.l1_loss(depth_map, target_depths, reduction='sum') / num_boxes
+        return {
+            'debug_loss_depth_geo': geo_loss,
+            'debug_loss_depth_reg': reg_loss,
+            'debug_loss_depth_map': depth_map_loss,
+        }
 
     def loss_dims(self, outputs, targets, indices, num_boxes, **kwargs) -> torch.Tensor:
         matched_outputs, matched_targets = kwargs['matched_outputs'], kwargs['matched_targets']
@@ -519,9 +551,38 @@ class SetCriterion(nn.Module):
         gt_weighted_depth = self.depth_bin_values[depth_target]
         gt_depth_residual = gt_depth_map_values - gt_weighted_depth
 
+        num_gt_per_img = [len(t['boxes']) for t in targets]
+        gt_boxes2d = torch.cat([t['boxes'] for t in targets], dim=0) * depth_map_logits.new_tensor([80, 24, 80, 24])
+        gt_boxes2d = box_ops.box_cxcywh_to_xyxy(gt_boxes2d)
+
         depth_residual_value = depth_residual.gather(dim=1, index=depth_target.unsqueeze(1)).squeeze()
-        depth_residual_loss = F.l1_loss(depth_residual_value, gt_depth_residual, reduction='sum') / num_boxes
+        depth_residual_loss = F.l1_loss(depth_residual_value, gt_depth_residual, reduction='none')
+        depth_residual_loss = self.ddn_loss.balancer(loss=depth_residual_loss, gt_boxes2d=gt_boxes2d, num_gt_per_img=num_gt_per_img)
         return {'loss_depth_residual': depth_residual_loss}
+
+    def loss_weighted_depth(self,
+                            outputs: Dict[str, torch.Tensor],
+                            targets: List[Dict[str, torch.Tensor]],
+                            indices: List[Tuple[torch.Tensor, torch.Tensor]],
+                            num_boxes: int,
+                            **kwargs) -> Dict[str, torch.Tensor]:
+        # [batch, num_depth_bins, depth_map_H, depth_map_W]
+        depth_map_logits = outputs['pred_depth_map_logits']
+        # [batch, depth_map_H, depth_map_W]
+        weighted_depth = outputs['weighted_depth']
+        weighted_depth = torch.broadcast_to(weighted_depth.unsqueeze(1), depth_map_logits.shape)
+
+        num_gt_per_img = [len(t['boxes']) for t in targets]
+        gt_boxes2d = torch.cat([t['boxes'] for t in targets], dim=0) * depth_map_logits.new_tensor([80, 24, 80, 24])
+        gt_boxes2d = box_ops.box_cxcywh_to_xyxy(gt_boxes2d)
+        gt_center_depth = torch.cat([t['depth'] for t in targets], dim=0).squeeze(dim=1)
+
+        depth_map_loss, weighted_depth_loss = self.ddn_with_weighted_depth_loss(
+            depth_map_logits, weighted_depth, gt_boxes2d, num_gt_per_img, gt_center_depth)
+        return {
+            'loss_depth_map': depth_map_loss,
+            'loss_weighted_depth': weighted_depth_loss,
+        }
 
     def _get_src_permutation_idx(self, indices: List[Tuple[torch.Tensor, torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor]:
         # permute predictions following indices
@@ -550,6 +611,8 @@ class SetCriterion(nn.Module):
             'loss_depth_map': self.loss_depth_map,
             'loss_depth_map_residual': self.loss_depth_map_residual,
             'loss_depth_map_with_residual': self.loss_depth_map_with_residual,
+            'loss_weighted_depth': self.loss_weighted_depth,
+            'loss_depth_debug': self.loss_depth_debug,
         }
 
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
@@ -582,8 +645,8 @@ class SetCriterion(nn.Module):
             len(matched_outputs[key_i]) = len(matched_targets[key_j]) = num_boxes_among_whole_batch for any key_i, key_j.
         """
         idx = self._get_src_permutation_idx(indices)
-        keys_to_match = ['pred_logits', 'pred_boxes', 'pred_3d_dim', 'pred_depth', 'pred_angle']
-        matched_outputs = {k: outputs[k][idx] for k in keys_to_match}
+        keys_to_match = ['pred_logits', 'pred_boxes', 'pred_3d_dim', 'pred_depth', 'pred_angle', 'debug_depth_geo', 'debug_depth_reg', 'debug_depth_map']
+        matched_outputs = {k: outputs[k][idx] for k in keys_to_match if k in outputs}
         matched_targets = {k: torch.cat([target[k][i] for target, (_, i) in zip(targets, indices)], dim=0)
                            for k in targets[0]}
 
@@ -632,7 +695,7 @@ class SetCriterion(nn.Module):
                 optional_params = dict(matched_outputs=matched_outputs, matched_targets=matched_targets)
                 for loss_name in self.loss_names:
                     # Intermediate masks losses are too costly to compute, we ignore them.
-                    if loss_name in ['loss_depth_map', 'loss_depth_map_with_residual', 'loss_depth_map_residual']:
+                    if loss_name in ['loss_depth_map', 'loss_depth_map_with_residual', 'loss_depth_map_residual', 'loss_weighted_depth', 'loss_depth_debug']:
                         continue
                     loss_dict = self.get_loss(loss_name, aux_outputs, targets, indices, num_boxes, **optional_params)
                     for key, loss_val in loss_dict.items():

@@ -296,7 +296,7 @@ class KITTI_Dataset(data.Dataset):
             boxes_3d[i] = center_3d_norm[0], center_3d_norm[1], l, r, t, b
 
             # encoding depth
-            depth[i] = objects[i].pos[-1] * crop_scale
+            depth[i] = objects[i].pos[-1]
 
             # encoding heading angle
             heading_angle = calib.ry2alpha(objects[i].ry, (objects[i].box2d[0] + objects[i].box2d[2]) / 2)

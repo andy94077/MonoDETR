@@ -150,7 +150,7 @@ class Trainer(object):
         dataloader_len = len(self.train_loader)
         # log to tensorboard `self.cfg['log_frequency']` times per epoch
         steps_to_log = set(np.linspace(dataloader_len // self.cfg['log_frequency'], dataloader_len, min(dataloader_len, self.cfg['log_frequency']), dtype=int))
-        for batch_idx, (inputs, calibs, targets, info) in enumerate(tqdm.tqdm(self.train_loader, leave=True, desc='iters')):
+        for batch_idx, (inputs, calibs, targets, info) in enumerate(tqdm.tqdm(self.train_loader, leave=True, dynamic_ncols=True, desc='iters')):
             inputs = inputs.to(self.device)
             calibs = calibs.to(self.device)
             for key in targets:

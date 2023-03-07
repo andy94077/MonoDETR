@@ -43,7 +43,7 @@ class DDNWithResidualLoss(nn.Module):
         self.alpha = alpha
         self.gamma = gamma
         self.depth_map_criterion = FocalLoss(alpha=self.alpha, gamma=self.gamma, reduction='none')
-        self.depth_residual_criterion = RegressionFocalLoss(alpha=self.alpha, gamma=self.gamma, norm='l1', reduction='none')
+        self.depth_residual_criterion = RegressionFocalLoss(alpha=self.alpha, gamma=self.gamma, norm='l2', reduction='none')
 
         self.depth_min = depth_min
         self.depth_max = depth_max

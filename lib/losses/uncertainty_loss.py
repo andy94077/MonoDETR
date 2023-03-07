@@ -2,14 +2,14 @@ import numpy as np
 import torch
 
 
-def laplacian_aleatoric_uncertainty_loss(input, target, log_variance, reduction='mean'):
+def laplacian_aleatoric_uncertainty_loss(input, target, log_std, reduction='mean'):
     '''
     References:
         MonoPair: Monocular 3D Object Detection Using Pairwise Spatial Relationships, CVPR'20
         Geometry and Uncertainty in Deep Learning for Computer Vision, University of Cambridge
     '''
     assert reduction in ['mean', 'sum']
-    loss = 1.4142 * torch.exp(-log_variance) * torch.abs(input - target) + log_variance
+    loss = 1.4142 * torch.exp(-log_std) * torch.abs(input - target) + log_std
     return loss.mean() if reduction == 'mean' else loss.sum()
 
 

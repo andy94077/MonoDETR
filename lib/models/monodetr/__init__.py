@@ -2,8 +2,10 @@
 from typing import Any, Dict
 from . import monodetr
 from . import monooqdd
+from . import monodepth_attention
 
 AVAILABLE_MODELS = {
+    'MonoDepthAttention': monodepth_attention.build,
     'MonoDETR': monodetr.build,
     'MonoOQDD': monooqdd.build,
 }

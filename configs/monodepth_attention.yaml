@@ -1,0 +1,178 @@
+random_seed: 444
+
+dataset:
+  type: &dataset_type "KITTI"
+  root_dir: "data/KITTIDataset"
+  train_split: "train"
+  test_split: "val"
+  batch_size: 16
+  num_workers: 8
+  use_3d_center: True
+  class_merging: False
+  use_dontcare: False
+  bbox2d_type: "anno" # 'proj' or 'anno'
+  meanshape: False # use predefined anchor or not
+  writelist: ["Car"]
+  clip_2d: False
+
+  aug_pd: True
+  aug_crop: False
+
+  random_flip: 0.5
+  random_crop: 0.5
+  scale: 0.05
+  shift: 0.05
+
+# model_name: "block2"
+model_name: "monodepth_attention_rdiou_giou_matched_targets_depth_ave_2_no_crop_weighted_depth_0.1_CrossAttentionMLP"
+# model_name: "monodetr_rdiou_giou_matched_targets_depth_ave_pretrained"
+# model_name: "monodetr_rdiou_giou_matched_targets_depth_ave_gt_depth_map_only"
+
+model:
+  type: MonoDepthAttention
+  num_classes: 3
+  return_intermediate_dec: True
+
+  # Backbone
+  backbone: "resnet50"
+  train_backbone: True
+  num_feature_levels: 4
+  dilation: False
+  position_embedding: "sine" # 'sine' or 'learned' or '3d_learned'
+  masks: False
+
+  # Depth predictor
+  mode: LID
+  num_depth_bins: &num_depth_bins 80
+  depth_min: &depth_min 1.e-3
+  depth_max: &depth_max 60.0
+  with_depth_residual: True
+
+  # Transformer
+  with_box_refine: True
+  two_stage: False
+  init_box: False
+  enc_layers: 3
+  dec_layers: 3
+  hidden_dim: 256
+  dim_feedforward: 256
+  dropout: 0.1
+  nheads: 8
+  num_queries: 50
+  enc_n_points: 4
+  dec_n_points: 4
+
+  depth_embedding:
+    type: CrossAttentionMLP
+
+  # Loss
+  # aux_loss: True
+
+  # Loss coefficients
+  # cls_loss_coef: 2
+  # focal_alpha: 0.25
+
+  # bbox_loss_coef: 5
+  # giou_loss_coef: 2
+  # 3dcenter_loss_coef: 10
+  # dim_loss_coef: 1
+  # angle_loss_coef: 1
+  # depth_loss_coef: 1
+  # depth_map_loss_coef: 1
+
+  # Matcher
+  # set_cost_class: 2
+  # set_cost_bbox: 5
+  # set_cost_giou: 2
+  # set_cost_3dcenter: 10
+  matcher:
+    cost_class: 2
+    cost_bbox: 5
+    cost_giou: 2
+    cost_3dcenter: 10
+    cost_rdiou: 2
+  
+  bbox_coder:
+    type: BBoxCoder
+
+
+loss:
+  losses: [
+      loss_angle,
+      loss_bbox,
+      loss_center,
+      loss_cls,
+      loss_depth,
+      # loss_depth_map,
+      loss_depth_map_residual,
+      # loss_depth_map_with_residual,
+      loss_depth_debug,
+      loss_weighted_depth,
+      loss_dim,
+      loss_giou,
+      loss_rdiou,
+    ]
+  aux_loss: True
+  focal_alpha: 0.25
+
+  weights:
+    loss_angle: 1
+    loss_bbox: 5 # 2D boxes IoU
+    loss_center: 10 # 3D center
+    loss_cls: 2 # classification
+    loss_depth: 1
+    loss_depth_map: 1 # DDN loss
+    loss_depth_residual: 0
+    debug_loss_depth_geo: 0
+    debug_loss_depth_reg: 0
+    debug_loss_depth_map: 0
+    loss_weighted_depth: 0.1
+    loss_dim: 1
+    loss_giou: 2 # 3D boxes to 2D boxes IoU
+    loss_rdiou: 2
+
+# regularization:
+#   losses: [cross_attention_MLP_with_residual]
+#   weights:
+#     cross_attention_MLP_with_residual: 0.01
+# regularization:
+#   losses: [depth_embed_regularization]
+#   weights:
+#     depth_embed_regularization: 1.e-3
+#   args:
+#     depth_embed_regularization:
+#       num_group_members: 3
+#       margin: 1
+
+optimizer:
+  type: "adamw"
+  lr: 0.0002
+  weight_decay: 0.0001
+
+lr_scheduler:
+  type: "step" # 'step' or 'cos'
+  warmup: False # 5 epoches, cosine warmup, init_lir=0.00001 in default
+  decay_rate: 0.1
+  decay_list: [125, 165]
+  # decay_rate: 0.6
+  # decay_list: [80, 100, 125, 165]
+
+trainer:
+  max_epoch: 195
+  save_frequency: 1 # checkpoint save interval (in epoch)
+  # resume_model: True
+  pretrain_model: ckpts/checkpoint_best_20.61AP.pth
+  # pretrain_model: runs/monodetr_rdiou_giou_matched_targets_depth_ave_gt_weighted_depth/checkpoint_best.pth
+  log_frequency: 5 # tensorboard log frequency (per epoch) (1 ~ 100)
+  save_path: "./runs/"
+  save_all: False # False for only savng the best and latest ckpts
+
+tester:
+  type: *dataset_type
+  mode: single # 'single' or 'all'; 'all' to evaluate all ckpts in the folder
+  checkpoint: 195 # the start ckpt epoch for 'all'
+  threshold: 0.2 # confidence filter
+  topk: 50
+  depth_min: *depth_min
+  depth_max: *depth_max
+  num_depth_bins: *num_depth_bins

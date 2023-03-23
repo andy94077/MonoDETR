@@ -15,7 +15,7 @@ from torch.utils.tensorboard import SummaryWriter
 from lib.helpers.dataloader_helper import prepare_targets
 from lib.helpers.regularization_helper import Regularization
 from lib.helpers.save_helper import get_checkpoint_state
-from lib.helpers.save_helper import load_checkpoint
+from lib.helpers.save_helper import load_checkpoint, load_pretrained_weight
 from lib.helpers.save_helper import save_checkpoint
 from lib.models.monodetr.monodetr import SetCriterion
 from utils import misc
@@ -60,11 +60,10 @@ class Trainer(object):
         # loading pretrain/resume model
         if cfg.get('pretrain_model'):
             assert os.path.exists(cfg['pretrain_model'])
-            load_checkpoint(model=self.model,
-                            optimizer=None,
-                            filename=cfg['pretrain_model'],
-                            map_location=self.device,
-                            logger=self.logger)
+            load_pretrained_weight(model=self.model,
+                                   filename=cfg['pretrain_model'],
+                                   map_location=self.device,
+                                   logger=self.logger)
 
         if cfg.get('resume_model', None):
             resume_model_path = os.path.join(self.output_dir, "checkpoint.pth")

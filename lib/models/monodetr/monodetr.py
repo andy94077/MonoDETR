@@ -1,7 +1,7 @@
 """
 MonoDETR: Depth-aware Transformer for Monocular 3D Object Detection
 """
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -10,6 +10,8 @@ import torch.distributed as dist
 import math
 import copy
 from lib.datasets.utils import class2angle
+from lib.models.monodetr.depth_predictor.ddn_loss.balancer import Balancer
+from lib.models.monodetr.depth_predictor.ddn_loss.focalloss import focal_loss, regression_focal_loss
 
 from utils import box_ops, depth_utils, misc
 from utils.misc import (NestedTensor, nested_tensor_from_tensor_list,
@@ -185,11 +187,15 @@ class MonoDETR(nn.Module):
             query_embeds = self.query_embed.weight
 
         out: Dict[str, Union[torch.Tensor, List[Dict[str, torch.Tensor]], Dict[str, torch.Tensor]]] = {}
+        kwargs_dict = {
+            'calibs': calibs,
+            'targets': targets,
+        }
         if self.with_depth_residual:
-            pred_depth_map_logits, depth_pos_embed, weighted_depth, pred_depth_residual = self.depth_predictor(srcs, masks[1], pos[1], targets)
+            pred_depth_map_logits, depth_pos_embed, weighted_depth, pred_depth_residual = self.depth_predictor(srcs, masks[1], pos[1], **kwargs_dict)
             out['pred_depth_residual'] = pred_depth_residual
         else:
-            pred_depth_map_logits, depth_pos_embed, weighted_depth = self.depth_predictor(srcs, masks[1], pos[1], targets)
+            pred_depth_map_logits, depth_pos_embed, weighted_depth = self.depth_predictor(srcs, masks[1], pos[1], **kwargs_dict)
         out['pred_depth_map_logits'] = pred_depth_map_logits
         out['weighted_depth'] = weighted_depth
 
@@ -307,6 +313,7 @@ class SetCriterion(nn.Module):
                  depth_min: float = 1e-3,
                  depth_max: float = 60,
                  num_depth_bins: int = 80,
+                 use_gt_depth_map: Optional[bool] = False,
                  ):
         """ Create the criterion.
         Parameters:
@@ -326,6 +333,7 @@ class SetCriterion(nn.Module):
         self.depth_min = depth_min
         self.depth_max = depth_max
         self.num_depth_bins = num_depth_bins
+        self.use_gt_depth_map = use_gt_depth_map
         self.depth_bin_values = nn.parameter.Parameter(
             depth_utils.get_depth_bin_values(depth_min, depth_max, num_depth_bins),
             requires_grad=False)
@@ -342,6 +350,7 @@ class SetCriterion(nn.Module):
                                                                      depth_min=self.depth_min,
                                                                      depth_max=self.depth_max,
                                                                      num_depth_bins=self.num_depth_bins)  # for depth map with residual
+        self.balancer = Balancer(fg_weight=13., bg_weight=1., downsample_factor=1)
 
     def loss_labels(self, outputs, targets, indices, num_boxes, **kwargs) -> torch.Tensor:
         """Classification loss (Binary focal loss)
@@ -575,10 +584,17 @@ class SetCriterion(nn.Module):
         num_gt_per_img = [len(t['boxes']) for t in targets]
         gt_boxes2d = torch.cat([t['boxes'] for t in targets], dim=0) * depth_map_logits.new_tensor([80, 24, 80, 24])
         gt_boxes2d = box_ops.box_cxcywh_to_xyxy(gt_boxes2d)
-        gt_center_depth = torch.cat([t['depth'] for t in targets], dim=0).squeeze(dim=1)
-
-        depth_map_loss, weighted_depth_loss = self.ddn_with_weighted_depth_loss(
-            depth_map_logits, weighted_depth, gt_boxes2d, num_gt_per_img, gt_center_depth)
+        if self.use_gt_depth_map:
+            gt_depth_map_values = torch.stack([t['depth_map'] for t in targets])
+            gt_depth_indices = depth_utils.bin_depths(gt_depth_map_values, depth_min=self.depth_min, depth_max=self.depth_max, num_bins=self.num_depth_bins, target=True)
+            depth_map_loss = focal_loss(depth_map_logits, gt_depth_indices, alpha=self.focal_alpha, reduction='none')
+            depth_map_loss = self.balancer(loss=depth_map_loss, gt_boxes2d=gt_boxes2d, num_gt_per_img=num_gt_per_img)
+            weighted_depth_loss = regression_focal_loss(depth_map_logits, weighted_depth, gt_depth_indices, gt_depth_map_values, self.focal_alpha, reduction='none')
+            weighted_depth_loss = self.balancer(loss=weighted_depth_loss, gt_boxes2d=gt_boxes2d, num_gt_per_img=num_gt_per_img)
+        else:
+            gt_center_depth = torch.cat([t['depth'] for t in targets], dim=0).squeeze(dim=1)
+            depth_map_loss, weighted_depth_loss = self.ddn_with_weighted_depth_loss(
+                depth_map_logits, weighted_depth, gt_boxes2d, num_gt_per_img, gt_center_depth)
         return {
             'loss_depth_map': depth_map_loss,
             'loss_weighted_depth': weighted_depth_loss,
@@ -646,9 +662,11 @@ class SetCriterion(nn.Module):
         """
         idx = self._get_src_permutation_idx(indices)
         keys_to_match = ['pred_logits', 'pred_boxes', 'pred_3d_dim', 'pred_depth', 'pred_angle', 'debug_depth_geo', 'debug_depth_reg', 'debug_depth_map']
+        # keys for each sample, not pairs
+        target_keys_to_exclude = ['depth_map']
         matched_outputs = {k: outputs[k][idx] for k in keys_to_match if k in outputs}
         matched_targets = {k: torch.cat([target[k][i] for target, (_, i) in zip(targets, indices)], dim=0)
-                           for k in targets[0]}
+                           for k in targets[0] if k not in target_keys_to_exclude}
 
         return matched_outputs, matched_targets
 
@@ -770,6 +788,7 @@ def build(model_cfg, loss_cfg):
         losses=loss_cfg['losses'],
         depth_min=model_cfg['depth_min'],
         depth_max=model_cfg['depth_max'],
-        num_depth_bins=model_cfg['num_depth_bins'])
+        num_depth_bins=model_cfg['num_depth_bins'],
+        use_gt_depth_map=loss_cfg.get('use_gt_depth_map'))
 
     return model, criterion

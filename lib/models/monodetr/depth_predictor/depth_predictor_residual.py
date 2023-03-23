@@ -34,13 +34,35 @@ class DepthPredictorResidual(nn.Module):
             nn.Conv2d(d_model, d_model, kernel_size=(1, 1)),
             nn.GroupNorm(32, d_model))
 
-        self.depth_head = nn.Sequential(
-            nn.Conv2d(d_model, d_model, kernel_size=(3, 3), padding=1),
-            nn.GroupNorm(32, num_channels=d_model),
-            nn.ReLU(),
-            nn.Conv2d(d_model, d_model, kernel_size=(3, 3), padding=1),
-            nn.GroupNorm(32, num_channels=d_model),
-            nn.ReLU())
+        self.with_calibs = model_cfg.get('with_calibs', False)
+        if self.with_calibs:
+            self.calib_means = nn.parameter.Parameter(torch.tensor([[7.1982214e+02, 0.0000000e+00, 6.0864624e+02, 4.4965939e+01],
+                                                                    [0.0000000e+00, 7.1982214e+02, 1.7417982e+02, 1.2870337e-01],
+                                                                    [0.0000000e+00, 0.0000000e+00, 1.0000000e+00, 3.0240209e-03]]),
+                                                      requires_grad=False)
+            self.calib_stds = nn.parameter.Parameter(torch.tensor([[4.5969672e+00, 0.0000000e+00, 2.2051606e+00, 3.2328996e-01],
+                                                                   [0.0000000e+00, 4.5969672e+00, 3.1489046e+00, 2.1139206e-01],
+                                                                   [0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 7.3922687e-04]]),
+                                                     requires_grad=False)
+            self.calib_conv = nn.Sequential(
+                nn.Conv2d(12, 12, 1),
+                nn.ReLU(),
+                nn.BatchNorm2d(12))
+            self.depth_head = nn.Sequential(
+                nn.Conv2d(d_model + 12, d_model, kernel_size=(3, 3), padding=1),
+                nn.GroupNorm(32, num_channels=d_model),
+                nn.ReLU(),
+                nn.Conv2d(d_model, d_model, kernel_size=(3, 3), padding=1),
+                nn.GroupNorm(32, num_channels=d_model),
+                nn.ReLU())
+        else:
+            self.depth_head = nn.Sequential(
+                nn.Conv2d(d_model, d_model, kernel_size=(3, 3), padding=1),
+                nn.GroupNorm(32, num_channels=d_model),
+                nn.ReLU(),
+                nn.Conv2d(d_model, d_model, kernel_size=(3, 3), padding=1),
+                nn.GroupNorm(32, num_channels=d_model),
+                nn.ReLU())
 
         self.depth_classifier = nn.Conv2d(d_model, self.num_depth_bins + 1, kernel_size=(1, 1))
         self.depth_residual = nn.Conv2d(d_model, self.num_depth_bins + 1, kernel_size=(1, 1))
@@ -52,7 +74,10 @@ class DepthPredictorResidual(nn.Module):
 
         self.depth_pos_embed = nn.Embedding(int(self.depth_max) + 1, 256)
 
-    def forward(self, feature, mask, pos, targets):
+    def normalize_calibs(self, calibs: torch.Tensor) -> torch.Tensor:
+        return (calibs - self.calib_means) / (self.calib_stds + 1e-6)
+
+    def forward(self, feature, mask, pos, calibs: torch.Tensor, targets, **kwargs):
 
         assert len(feature) == 4
 
@@ -62,12 +87,20 @@ class DepthPredictorResidual(nn.Module):
         src_8 = self.downsample(feature[0])
         src = (src_8 + src_16 + src_32) / 3
 
+        if self.with_calibs:
+            batch, C, H, W = src.shape
+            # [batch, 3, 4] -> [batch, 12, 1, 1]
+            normalized_calibs = self.normalize_calibs(calibs).view(batch, -1, 1, 1)
+            normalized_calibs = self.calib_conv(normalized_calibs)
+            # [batch, C, H, W] + [batch, 12, 1, 1] = [batch, C + 12, H, W]
+            src = torch.cat([src, normalized_calibs.repeat(1, 1, H, W)], dim=1)
         src = self.depth_head(src)
         depth_logits: torch.Tensor = self.depth_classifier(src)
         # [batch, num_depth_bins + 1, depth_map_H, depth_map_W]
         depth_residual: torch.Tensor = self.depth_residual(src)
 
-        # weighted_depth = depth_utils.get_gt_depth_map_values(depth_logits, targets, self.depth_max)
+        # # weighted_depth = depth_utils.get_gt_depth_map_values(depth_logits, targets, self.depth_max)
+        # weighted_depth = torch.stack([t['depth_map'] for t in targets])
         # num_bins = 80
         # depth_indices = depth_utils.bin_depths(weighted_depth, num_bins=num_bins, target=True)
         # # [batch, depth_map_H, depth_map_W, num_depth_bins + 1], dtype: torch.float

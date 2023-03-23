@@ -3,10 +3,10 @@ random_seed: 444
 dataset:
   type: &dataset_type "KITTI"
   root_dir: "data/KITTIDataset"
-  train_split: "train"
-  test_split: "val"
-  batch_size: 16
-  num_workers: 8
+  train_split: "trainval"
+  test_split: "test"
+  batch_size: 32
+  num_workers: 16
   use_3d_center: True
   class_merging: False
   use_dontcare: False
@@ -16,21 +16,21 @@ dataset:
   clip_2d: False
 
   aug_pd: True
-  aug_crop: True
+  aug_crop: False
 
   random_flip: 0.5
   random_crop: 0.5
-  scale: 0.4
-  shift: 0.1
+  scale: 0.05
+  shift: 0.05
 
   depth_min: &depth_min 1.e-3
   depth_max: &depth_max 60.0
-  use_gt_depth_map: &use_gt_depth_map False
+  use_gt_depth_map: &use_gt_depth_map True
 
-model_name: "monodetr_rdiou_giou_matched_targets_depth_ave_depth_residual_supervised_l2_7"
+model_name: "monodetr_depth_pretrained"
 
 model:
-  type: MonoDETR
+  type: MonoDepthPretrained
   num_classes: 3
   return_intermediate_dec: True
 
@@ -48,7 +48,6 @@ model:
   depth_min: *depth_min
   depth_max: *depth_max
   with_depth_residual: True
-  with_calibs: True
 
   # Transformer
   with_box_refine: True
@@ -64,72 +63,21 @@ model:
   enc_n_points: 4
   dec_n_points: 4
 
-  # Loss
-  # aux_loss: True
-
-  # Loss coefficients
-  # cls_loss_coef: 2
-  # focal_alpha: 0.25
-
-  # bbox_loss_coef: 5
-  # giou_loss_coef: 2
-  # 3dcenter_loss_coef: 10
-  # dim_loss_coef: 1
-  # angle_loss_coef: 1
-  # depth_loss_coef: 1
-  # depth_map_loss_coef: 1
-
-  # Matcher
-  # set_cost_class: 2
-  # set_cost_bbox: 5
-  # set_cost_giou: 2
-  # set_cost_3dcenter: 10
-  matcher:
-    cost_class: 2
-    cost_bbox: 5
-    cost_giou: 2
-    cost_3dcenter: 10
-    cost_rdiou: 2
-  
-  bbox_coder:
-    type: BBoxCoder
-
-
 loss:
   losses: [
-      loss_angle,
-      loss_bbox,
-      loss_center,
-      loss_cls,
-      loss_depth,
       # loss_depth_map,
       loss_depth_map_residual,
       # loss_depth_map_with_residual,
-      loss_depth_debug,
       loss_weighted_depth,
-      loss_dim,
-      loss_giou,
-      loss_rdiou,
     ]
-  aux_loss: True
+  aux_loss: False
   focal_alpha: 0.25
   use_gt_depth_map: *use_gt_depth_map
 
   weights:
-    loss_angle: 1
-    loss_bbox: 5 # 2D boxes IoU
-    loss_center: 10 # 3D center
-    loss_cls: 2 # classification
-    loss_depth: 1
     loss_depth_map: 1 # DDN loss
     loss_depth_residual: 0
-    debug_loss_depth_geo: 0
-    debug_loss_depth_reg: 0
-    debug_loss_depth_map: 0
     loss_weighted_depth: 0.1
-    loss_dim: 1
-    loss_giou: 2 # 3D boxes to 2D boxes IoU
-    loss_rdiou: 2
 
 # regularization:
 #   losses: [depth_embed_regularization]
@@ -154,14 +102,13 @@ lr_scheduler:
   # decay_list: [80, 100, 125, 165]
 
 trainer:
-  max_epoch: 195
+  max_epoch: 20
   save_frequency: 1 # checkpoint save interval (in epoch)
   # resume_model: True
   pretrain_model: ckpts/checkpoint_best_20.61AP.pth
-  # pretrain_model: runs/trainval/monodetr_depth_pretrained/checkpoint.pth
   # pretrain_model: runs/monodetr_rdiou_giou_matched_targets_depth_ave_gt_weighted_depth/checkpoint_best.pth
   log_frequency: 5 # tensorboard log frequency (per epoch) (1 ~ 100)
-  save_path: "./runs/"
+  save_path: "./runs/trainval"
   save_all: False # False for only savng the best and latest ckpts
 
 tester:

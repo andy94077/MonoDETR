@@ -115,13 +115,18 @@ class DDNWithWeightedDepthLoss(nn.Module):
 
         return indices
 
-    def forward(self, depth_logits, weighted_depth, gt_boxes2d, num_gt_per_img, gt_center_depth):
+    def forward(self,
+                depth_logits: torch.Tensor,
+                weighted_depth: torch.Tensor,
+                gt_boxes2d: torch.Tensor,
+                num_gt_per_img: List[int],
+                gt_center_depth: torch.Tensor):
         """Gets depth_map loss
         Args:
-            depth_logits: torch.Tensor(B, D+1, H, W)]: Predicted depth logits
-            gt_boxes2d [torch.Tensor (B, N, 4)]: 2D box labels for foreground/background balancing
-            num_gt_per_img:
-            gt_center_depth:
+            depth_logits: [torch.Tensor(batch, D+1, H, W)]: Predicted depth logits
+            gt_boxes2d [torch.Tensor(num_boxes, 4)]: 2D box labels for foreground/background balancing
+            num_gt_per_img: [list(batch)] number of ground truths for each image.
+            gt_center_depth: [torch.Tensor(num_boxes)]: center depth of each bbox.
         Returns:
             [depth_map_loss, depth_residual_loss].
             * depth_map_loss [torch.Tensor(1)]: Depth classification network loss

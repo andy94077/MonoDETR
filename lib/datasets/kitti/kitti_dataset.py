@@ -1,23 +1,23 @@
+from .pd import PhotometricDistort
+import copy
+import lib.datasets.kitti.kitti_eval_python.kitti_common as kitti
+from lib.datasets.kitti.kitti_eval_python.eval import get_distance_eval_result
+from lib.datasets.kitti.kitti_eval_python.eval import get_official_eval_result
+from lib.datasets.kitti.kitti_utils import affine_transform
+from lib.datasets.kitti.kitti_utils import get_affine_transform
+from lib.datasets.kitti.kitti_utils import Calibration
+from lib.datasets.kitti.kitti_utils import get_objects_from_label
+from lib.datasets.utils import draw_umich_gaussian
+from lib.datasets.utils import gaussian_radius
+from lib.datasets.utils import angle2class
 import os
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 import numpy as np
 import torch.utils.data as data
+import cv2
 from PIL import Image, ImageFile
 import random
 ImageFile.LOAD_TRUNCATED_IMAGES = True
-
-from lib.datasets.utils import angle2class
-from lib.datasets.utils import gaussian_radius
-from lib.datasets.utils import draw_umich_gaussian
-from lib.datasets.kitti.kitti_utils import get_objects_from_label
-from lib.datasets.kitti.kitti_utils import Calibration
-from lib.datasets.kitti.kitti_utils import get_affine_transform
-from lib.datasets.kitti.kitti_utils import affine_transform
-from lib.datasets.kitti.kitti_eval_python.eval import get_official_eval_result
-from lib.datasets.kitti.kitti_eval_python.eval import get_distance_eval_result
-import lib.datasets.kitti.kitti_eval_python.kitti_common as kitti
-import copy
-from .pd import PhotometricDistort
 
 
 class KITTI_Dataset(data.Dataset):
@@ -39,6 +39,7 @@ class KITTI_Dataset(data.Dataset):
         self.meanshape = cfg.get('meanshape', False)
         self.class_merging = cfg.get('class_merging', False)
         self.use_dontcare = cfg.get('use_dontcare', False)
+        self.use_gt_depth_map = cfg.get('use_gt_depth_map', False)
 
         if self.class_merging:
             self.writelist.extend(['Van', 'Truck'])
@@ -55,6 +56,7 @@ class KITTI_Dataset(data.Dataset):
         self.image_dir = os.path.join(self.data_dir, 'image_2')
         self.calib_dir = os.path.join(self.data_dir, 'calib')
         self.label_dir = os.path.join(self.data_dir, 'label_2')
+        self.depth_map_dir = os.path.join(self.data_dir, 'depth_dense')
 
         # data augmentation configuration
         self.data_augmentation = True if split in ['train', 'trainval'] else False
@@ -77,6 +79,10 @@ class KITTI_Dataset(data.Dataset):
         if not self.meanshape:
             self.cls_mean_size = np.zeros_like(self.cls_mean_size, dtype=np.float32)
 
+        # depth
+        self.depth_min = cfg.get('depth_min', 1e-3)
+        self.depth_max = cfg.get('depth_max', 60)
+
         # others
         self.downsample = 32
         self.pd = PhotometricDistort()
@@ -96,6 +102,14 @@ class KITTI_Dataset(data.Dataset):
         calib_file = os.path.join(self.calib_dir, '%06d.txt' % idx)
         assert os.path.exists(calib_file)
         return Calibration(calib_file)
+
+    def get_depth_map(self, idx, img_size):
+        depth_map = cv2.imread(os.path.join(self.depth_map_dir, f'{idx:06d}.png'), cv2.IMREAD_GRAYSCALE)
+        dst_W, dst_H = img_size
+        pad_h, pad_w = dst_H - depth_map.shape[0], (dst_W - depth_map.shape[1]) // 2
+        pad_wr = dst_W - pad_w - depth_map.shape[1]
+        depth_map = np.pad(depth_map, ((pad_h, 0), (pad_w, pad_wr)), mode='edge')
+        return Image.fromarray(depth_map)
 
     def eval(self, results_dir, logger) -> Tuple[Dict[str, float], float]:
         logger.info("==> Loading detections and GTs...")
@@ -144,10 +158,12 @@ class KITTI_Dataset(data.Dataset):
                     random_crop_flag = True
                     crop_scale = np.clip(np.random.randn() * self.scale + 1, 1 - self.scale, 1 + self.scale)
                     crop_size = img_size * crop_scale
-                    center[0] += img_size[0] * np.clip(np.random.randn() * self.shift, -2 * self.shift, 2 * self.shift)
-                    center[1] += img_size[1] * np.clip(np.random.randn() * self.shift, -2 * self.shift, 2 * self.shift)
+                    w_shift = np.clip(np.random.randn() * self.shift, -2 * self.shift, 2 * self.shift)
+                    h_shift = np.clip(np.random.randn() * self.shift, -2 * self.shift, 2 * self.shift)
+                    center[0] += img_size[0] * w_shift
+                    center[1] += img_size[1] * h_shift
 
-        # add affine transformation for 2d images.
+        # add affine transformation for 2d images. Each matrix has shape [2, 3].
         trans, trans_inv = get_affine_transform(center, crop_size, 0, self.resolution, inv=1)
         img = img.transform(tuple(self.resolution.tolist()),
                             method=Image.AFFINE,
@@ -159,25 +175,41 @@ class KITTI_Dataset(data.Dataset):
         img = (img - self.mean) / self.std
         img = img.transpose(2, 0, 1)  # C * H * W
 
+        # # [3, 3]
+        calib = self.get_calib(index)
+        trans_for_calib = np.concatenate([trans, np.array([[0, 0, 1]])], axis=0, dtype=np.float32)
+        calib_matrix = trans_for_calib @ calib.P2.copy()
+
         info = {'img_id': index,
                 'img_size': img_size,
                 'bbox_downsample_ratio': img_size / features_size}
 
         if self.split == 'test':
-            calib = self.get_calib(index)
-            return img, calib.P2, dict(), info
+            return img, calib_matrix, dict(), info
 
         #  ============================   get labels   ==============================
         objects = self.get_label(index)
-        calib = self.get_calib(index)
-        calib_matrix = calib.P2.copy().astype(np.float32)
+
+        if self.use_gt_depth_map:
+            depth_map = self.get_depth_map(index, img_size)
+            if random_flip_flag:
+                depth_map = depth_map.transpose(Image.FLIP_LEFT_RIGHT)
+
+            # [depth_map_W, depth_map_H]
+            final_depth_map_size = self.resolution // 16
+            depth_map = depth_map.transform(tuple(self.resolution),
+                                            method=Image.AFFINE,
+                                            data=tuple(trans_inv.reshape(-1)),
+                                            resample=Image.BILINEAR)
+
+            depth_map = np.array(depth_map).astype(np.float32)
+            depth_map = cv2.resize(depth_map, tuple(final_depth_map_size), interpolation=cv2.INTER_AREA)
+            depth_map = np.clip(depth_map, self.depth_min, self.depth_max)
+        else:
+            depth_map = np.array([])
 
         # data augmentation for labels
         if random_flip_flag:
-            flip_left_right = np.array([[-1, 0, self.resolution[0]],
-                                        [0, 1, 0],
-                                        [0, 0, 1]], dtype=np.float32)  # [[-1, 0, W], [0, 1, 0], [0, 0, 1]]
-            calib_matrix = flip_left_right @ calib_matrix
             if self.aug_calib:
                 calib.flip(img_size)
             for object in objects:
@@ -195,11 +227,6 @@ class KITTI_Dataset(data.Dataset):
                     object.ry -= 2 * np.pi
                 if object.ry < -np.pi:
                     object.ry += 2 * np.pi
-
-        if random_crop_flag:
-            # [3, 3]
-            trans_for_calib = np.concatenate([trans, np.array([[0, 0, 1]])], axis=0, dtype=np.float32)
-            calib_matrix = trans_for_calib @ calib_matrix
 
         # labels encoding
         calibs = np.zeros((self.max_objs, 3, 4), dtype=np.float32)
@@ -331,6 +358,7 @@ class KITTI_Dataset(data.Dataset):
             'src_size_3d': src_size_3d,  # real_size_3d
             'heading_bin': heading_bin,
             'heading_res': heading_res,
+            'depth_map': depth_map,
             'mask_2d': mask_2d}
 
         info = {'img_id': index,

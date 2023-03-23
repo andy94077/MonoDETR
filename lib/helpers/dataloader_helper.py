@@ -39,11 +39,14 @@ def prepare_targets(targets: Dict[str, torch.Tensor], batch_size: int) -> List[D
     mask = targets['mask_2d']
 
     key_list = ['labels', 'boxes', 'calibs', 'depth', 'size_3d', 'src_size_3d', 'heading_bin', 'heading_res', 'boxes_3d']
+    batch_wise_key_list = ['depth_map']
     for bz in range(batch_size):
         target_dict = {}
         for key, val in targets.items():
             if key in key_list:
                 target_dict[key] = val[bz][mask[bz]]
+            elif key in batch_wise_key_list:
+                target_dict[key] = val[bz]
         targets_list.append(target_dict)
     return targets_list
 
@@ -63,7 +66,7 @@ def build_dataloader(cfg):
                               worker_init_fn=my_worker_init_fn,
                               shuffle=False,
                               pin_memory=False,
-                              drop_last=False,
+                              drop_last=True,
                               sampler=DistributedSampler(train_set))
     test_loader = DataLoader(dataset=test_set,
                              batch_size=cfg['batch_size'],

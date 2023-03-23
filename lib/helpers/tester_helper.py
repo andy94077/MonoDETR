@@ -94,7 +94,7 @@ class Tester(object):
         for batch_idx, (inputs, calibs, targets, info) in enumerate(tqdm.tqdm(self.dataloader, dynamic_ncols=True, desc='Evaluation Progress')):
             # load evaluation data and move data to GPU.
             inputs = inputs.to(self.device)
-            calibs = calibs.to(self.device)
+            calibs: torch.Tensor = calibs.to(self.device)
             img_sizes = info['img_size'].to(self.device)
 
             start_time = time.time()
@@ -104,7 +104,7 @@ class Tester(object):
                 targets = prepare_targets(targets, inputs.shape[0])
 
             outputs = self.model(inputs, calibs, img_sizes, targets)
-            if writer is not None:
+            if writer is not None and batch_idx == 0:
                 self.log_depth_map(writer, outputs['pred_depth_map_logits'], targets, global_step=self.epoch, tag='val/depth_map')
             if loss and return_loss:
                 # for key in targets:
@@ -121,21 +121,11 @@ class Tester(object):
             end_time = time.time()
             model_infer_time += end_time - start_time
 
-            # dets = extract_dets_from_outputs(outputs=outputs, topk=self.cfg['topk'])
-
-            # dets = dets.detach().cpu().numpy()
-
             # get corresponding calibs & transform tensor to numpy
-            calibs = [self.dataloader.dataset.get_calib(index) for index in info['img_id']]
+            calibs_class_list = [self.dataloader.dataset.get_calib(index) for index in info['img_id']]
             info = {key: val.detach().cpu().numpy() for key, val in info.items()}
             cls_mean_size = self.dataloader.dataset.cls_mean_size
-            # dets = decode_detections(
-            #     dets=dets,
-            #     info=info,
-            #     calibs=calibs,
-            #     cls_mean_size=cls_mean_size,
-            #     threshold=self.cfg.get('threshold', 0.2))
-            dets = self.model.module.bbox_coder.decode(outputs, info, calibs, cls_mean_size, self.cfg.get('threshold', 0.2))
+            dets = self.model.module.bbox_coder.decode(outputs, info, calibs_class_list, cls_mean_size, self.cfg.get('threshold', 0.2))
 
             results.update(dets)
 
@@ -177,7 +167,10 @@ class Tester(object):
         return result_dict, car_moderate
 
     def log_depth_map(self, writer: SummaryWriter, depth_logits: torch.Tensor, targets: List[Dict[str, torch.Tensor]], global_step: int, tag: str):
-        depth_map_values = depth_utils.get_gt_depth_map_values(depth_logits, targets, self.cfg['depth_max'])
+        if self.cfg.get('use_gt_depth_map'):
+            depth_map_values = torch.stack([t['depth_map'] for t in targets])
+        else:
+            depth_map_values = depth_utils.get_gt_depth_map_values(depth_logits, targets, self.cfg['depth_max'])
         depth_indices = depth_utils.bin_depths(depth_map_values,
                                                target=True,
                                                depth_min=self.cfg['depth_min'],
@@ -187,10 +180,11 @@ class Tester(object):
         # [batch, depth_map_H, depth_map_W]
         pred_depth_indices = depth_logits.argmax(1).detach().cpu().numpy()
 
-        fig, axes = plt.subplots(min(8, len(pred_depth_indices)), 2, figsize=(6, int(1.3 * min(8, len(pred_depth_indices)))))  # type: ignore
+        fig, axes = plt.subplots(min(8, len(pred_depth_indices)), 2,
+                                 figsize=(6, int(1.3 * min(8, len(pred_depth_indices)))))
         for ax, pred_depth_indice, depth_indice in zip(axes, pred_depth_indices, depth_indices):
-            ax[0].imshow(pred_depth_indice)
-            ax[1].imshow(depth_indice)
+            ax[0].imshow(pred_depth_indice, vmin=0, vmax=self.cfg['num_depth_bins'])
+            ax[1].imshow(depth_indice, vmin=0, vmax=self.cfg['num_depth_bins'])
         axes[0][0].set_title('pred')
         axes[0][1].set_title('ground truth')
 

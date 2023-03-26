@@ -36,13 +36,13 @@ class DepthPredictorResidual(nn.Module):
 
         self.with_calibs = model_cfg.get('with_calibs', False)
         if self.with_calibs:
-            self.calib_means = nn.parameter.Parameter(torch.tensor([[7.1982214e+02, 0.0000000e+00, 6.0864624e+02, 4.4965939e+01],
-                                                                    [0.0000000e+00, 7.1982214e+02, 1.7417982e+02, 1.2870337e-01],
-                                                                    [0.0000000e+00, 0.0000000e+00, 1.0000000e+00, 3.0240209e-03]]),
+            self.calib_means = nn.parameter.Parameter(torch.tensor([[7.19760620e+02, 0.00000000e+00, 6.08426453e+02, 4.49521179e+01],
+                                                                    [0.00000000e+00, 7.19760620e+02, 1.74552841e+02, 1.06681034e-01],
+                                                                    [0.00000000e+00, 0.00000000e+00, 1.00000000e+00, 3.01075145e-03]]),
                                                       requires_grad=False)
-            self.calib_stds = nn.parameter.Parameter(torch.tensor([[4.5969672e+00, 0.0000000e+00, 2.2051606e+00, 3.2328996e-01],
-                                                                   [0.0000000e+00, 4.5969672e+00, 3.1489046e+00, 2.1139206e-01],
-                                                                   [0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 7.3922687e-04]]),
+            self.calib_stds = nn.parameter.Parameter(torch.tensor([[4.3950200e+00, 0.0000000e+00, 2.4767241e+00, 3.0185112e-01],
+                                                                   [0.0000000e+00, 4.3950200e+00, 3.5778313e+00, 2.3718980e-01],
+                                                                   [0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 6.9798628e-04]]),
                                                      requires_grad=False)
             self.calib_conv = nn.Sequential(
                 nn.Conv2d(12, 12, 1),

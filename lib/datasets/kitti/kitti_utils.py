@@ -287,17 +287,18 @@ class Calibration(object):
         """
         ry = alpha + np.arctan2(u - self.cu, self.fu)
 
-        ry = ry % (2 * np.pi) - np.pi
+        ry %= 2 * np.pi
+        if ry > np.pi:
+            ry -= 2 * np.pi
 
         return ry
 
     def ry2alpha(self, ry, u):
         alpha = ry - np.arctan2(u - self.cu, self.fu)
 
+        alpha %= (2 * np.pi)
         if alpha > np.pi:
             alpha -= 2 * np.pi
-        if alpha < -np.pi:
-            alpha += 2 * np.pi
 
         return alpha
 

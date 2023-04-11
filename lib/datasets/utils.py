@@ -21,10 +21,11 @@ def class2angle(cls, residual, to_label_format=False):
     ''' Inverse function to angle2class. '''
     angle_per_class = 2 * np.pi / float(num_heading_bin)
     angle_center = cls * angle_per_class
-    angle = angle_center + residual
+    angle = (angle_center + residual) % (2 * np.pi)
     if to_label_format:
         if isinstance(angle, float):
-            angle -= 2 * np.pi
+            if angle > np.pi:
+                angle -= 2 * np.pi
         else:
             angle[angle > np.pi] -= 2 * np.pi  # type: ignore
     return angle

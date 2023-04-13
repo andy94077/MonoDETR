@@ -68,8 +68,8 @@ class MonoDETR(nn.Module):
         self.dim_embed_3d = MLP(hidden_dim, hidden_dim, 3, 2)  # [h, w, l] - mean_size
         self.angle_embed = MLP(hidden_dim, hidden_dim, 24, 2)  # 12 classes + 12 offset for each classes
         self.depth_embed = MLP(hidden_dim, hidden_dim, 2, 2)  # depth and deviation
-        self.depth_ave_layer = nn.Linear(2, 1)
-        nn.init.constant_(self.depth_ave_layer.weight, 1 / 2)
+        self.depth_ave_layer = nn.Linear(1, 1)
+        nn.init.constant_(self.depth_ave_layer.weight, 1.)
         nn.init.zeros_(self.depth_ave_layer.bias)
 
         if init_box:
@@ -253,7 +253,8 @@ class MonoDETR(nn.Module):
             # depth average + sigma
             # depth_ave = ((1. / (depth_reg[:, :, 0: 1].sigmoid() + 1e-6) - 1.) + depth_geo.unsqueeze(-1) + depth_map) / 3
             # depth_ave = self.depth_ave_layer(torch.cat([(1. / (depth_reg[:, :, 0: 1].sigmoid() + 1e-6) - 1.), depth_geo.unsqueeze(-1), depth_map], dim=-1))
-            depth_ave = self.depth_ave_layer(torch.cat([(1. / (depth_reg[:, :, 0: 1].sigmoid() + 1e-6) - 1.), depth_map], dim=-1))
+            # depth_ave = self.depth_ave_layer(torch.cat([(1. / (depth_reg[:, :, 0: 1].sigmoid() + 1e-6) - 1.), depth_map], dim=-1))
+            depth_ave = self.depth_ave_layer(1. / (depth_reg[:, :, 0: 1].sigmoid() + 1e-6) - 1.)
             if lvl == hs.shape[0] - 1:
                 out['debug_depth_reg'] = 1. / (depth_reg[:, :, 0].sigmoid() + 1e-6) - 1.
                 out['debug_depth_geo'] = depth_geo
@@ -347,6 +348,7 @@ class SetCriterion(nn.Module):
                                                           depth_max=self.depth_max,
                                                           num_depth_bins=self.num_depth_bins)  # for depth map with residual
         self.ddn_with_weighted_depth_loss = DDNWithWeightedDepthLoss(alpha=self.focal_alpha,
+                                                                     # gamma=3.0,
                                                                      depth_min=self.depth_min,
                                                                      depth_max=self.depth_max,
                                                                      num_depth_bins=self.num_depth_bins)  # for depth map with residual
@@ -504,6 +506,33 @@ class SetCriterion(nn.Module):
         angle_loss = angle_loss / num_boxes
         return angle_loss
 
+    def loss_angles_focal(self,
+                          outputs: Dict[str, torch.Tensor],
+                          targets: List[Dict[str, torch.Tensor]],
+                          indices: List[Tuple[torch.Tensor, torch.Tensor]],
+                          num_boxes: int,
+                          **kwargs) -> Dict[str, torch.Tensor]:
+        matched_outputs, matched_targets = kwargs['matched_outputs'], kwargs['matched_targets']
+        heading_input = matched_outputs['pred_angle']
+        target_heading_cls = matched_targets['heading_bin']
+        target_heading_res = matched_targets['heading_res']
+
+        heading_input = heading_input.view(-1, 24)
+        heading_target_cls = target_heading_cls.view(-1).long()
+        heading_target_res = target_heading_res.view(-1)
+
+        # classification loss
+        heading_input_cls = heading_input[:, 0:12]
+        cls_loss = focal_loss(heading_input_cls, heading_target_cls, alpha=self.focal_alpha, reduction='sum')
+
+        # regression loss
+        heading_input_res = heading_input[:, 12:24]
+        reg_loss = regression_focal_loss(heading_input_cls, heading_input_res, heading_target_cls, heading_target_res, self.focal_alpha, reduction='sum')
+
+        angle_loss = cls_loss + reg_loss
+        angle_loss = angle_loss / num_boxes
+        return {'loss_angle': angle_loss}
+
     def loss_depth_map(self,
                        outputs: Dict[str, torch.Tensor],
                        targets: List[Dict[str, torch.Tensor]],
@@ -623,6 +652,7 @@ class SetCriterion(nn.Module):
             'loss_depth': self.loss_depths,
             'loss_dim': self.loss_dims,
             'loss_angle': self.loss_angles,
+            'loss_angle_focal': self.loss_angles_focal,
             'loss_center': self.loss_3dcenter,
             'loss_depth_map': self.loss_depth_map,
             'loss_depth_map_residual': self.loss_depth_map_residual,

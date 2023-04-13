@@ -3,7 +3,7 @@ random_seed: 444
 dataset:
   type: &dataset_type "KITTI"
   root_dir: "data/KITTIDataset"
-  train_split: "train"
+  train_split: "trainval"
   test_split: "val"
   batch_size: 16
   num_workers: 8
@@ -25,9 +25,10 @@ dataset:
 
   depth_min: &depth_min 1.e-3
   depth_max: &depth_max 60.0
-  use_gt_depth_map: &use_gt_depth_map False
+  use_gt_depth_map: &use_gt_depth_map True
 
-model_name: "monodetr_rdiou_giou_matched_targets_depth_ave_depth_residual_supervised_l2_7"
+model_name: "monodetr_rdiou_giou_matched_targets_depth_ave_1_use_gt_weighted_depth_supervised_l2_0.1_broadcast_loss_angle_focal_depth_pretrained_with_calibs3_scale_0.4_shift_0.25_warmup_epoch_150"
+# model_name: "monodetr_rdiou_giou_matched_targets_depth_ave_1_use_gt_weighted_depth_supervised_l2_0.1_broadcast_depth_pretrained_with_calibs_training2_aug_perspective_0.1_scale_0.4_shift_0.25_warmup_clip_2d"
 
 model:
   type: MonoDETR
@@ -97,7 +98,8 @@ model:
 
 loss:
   losses: [
-      loss_angle,
+      # loss_angle,
+      loss_angle_focal,
       loss_bbox,
       loss_center,
       loss_cls,
@@ -147,7 +149,7 @@ optimizer:
 
 lr_scheduler:
   type: "step" # 'step' or 'cos'
-  warmup: False # 5 epoches, cosine warmup, init_lir=0.00001 in default
+  warmup: True # 5 epoches, cosine warmup, init_lir=0.00001 in default
   decay_rate: 0.1
   decay_list: [125, 165]
   # decay_rate: 0.6
@@ -157,11 +159,11 @@ trainer:
   max_epoch: 195
   save_frequency: 1 # checkpoint save interval (in epoch)
   # resume_model: True
-  pretrain_model: ckpts/checkpoint_best_20.61AP.pth
-  # pretrain_model: runs/trainval/monodetr_depth_pretrained/checkpoint.pth
-  # pretrain_model: runs/monodetr_rdiou_giou_matched_targets_depth_ave_gt_weighted_depth/checkpoint_best.pth
+  # pretrain_model: ckpts/checkpoint_best_20.61AP.pth
+  # pretrain_model: runs/monodetr_depth_pretrained_with_calibs_2/checkpoint_best.pth
+  pretrain_model: runs/trainval/monodetr_depth_pretrained_with_calibs3/checkpoint.pth
   log_frequency: 5 # tensorboard log frequency (per epoch) (1 ~ 100)
-  save_path: "./runs/"
+  save_path: "./runs/trainval"
   save_all: False # False for only savng the best and latest ckpts
 
 tester:

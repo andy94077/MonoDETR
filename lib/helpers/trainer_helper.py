@@ -52,6 +52,8 @@ class Trainer(object):
         self.regularization = regularization
         self.model_name = model_name
         self.output_dir = os.path.join('./' + cfg['save_path'], model_name)
+        if misc.is_main_process():
+            self.logger.info(f'model_dir: {self.output_dir}')
         self.tester = None
         self.with_tensorboard = with_tensorboard and misc.is_main_process()
         if self.with_tensorboard:
@@ -149,7 +151,7 @@ class Trainer(object):
         dataloader_len = len(self.train_loader)
         # log to tensorboard `self.cfg['log_frequency']` times per epoch
         steps_to_log = set(np.linspace(dataloader_len // self.cfg['log_frequency'], dataloader_len, min(dataloader_len, self.cfg['log_frequency']), dtype=int))
-        for batch_idx, (inputs, calibs, targets, info) in enumerate(tqdm.tqdm(self.train_loader, leave=True, dynamic_ncols=True, desc='iters')):
+        for batch_idx, (inputs, calibs, targets, info) in enumerate(tqdm.tqdm(self.train_loader, leave=True, dynamic_ncols=True, desc=f'rank={misc.get_rank()} iters')):
             inputs = inputs.to(self.device)
             calibs = calibs.to(self.device)
             for key in targets:

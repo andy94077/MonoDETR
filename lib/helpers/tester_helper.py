@@ -16,7 +16,7 @@ from lib.helpers.save_helper import load_checkpoint
 from lib.models.monodetr.monodetr import MonoDETR
 import time
 
-from utils import depth_utils
+from utils import depth_utils, misc
 
 
 class Tester(object):
@@ -68,7 +68,7 @@ class Tester(object):
             checkpoints_list = []
             for _, _, files in os.walk(self.output_dir):
                 for f in files:
-                    if f.endswith(".pth") and int(f[17:-4]) >= start_epoch:
+                    if f.endswith(".pth") and f != 'checkpoint_best.pth' and int(f[17:-4]) >= start_epoch:
                         checkpoints_list.append(os.path.join(self.output_dir, f))
             checkpoints_list.sort(key=os.path.getmtime)
 
@@ -91,7 +91,7 @@ class Tester(object):
         results = {}
         model_infer_time = 0
         log_dict = {}
-        for batch_idx, (inputs, calibs, targets, info) in enumerate(tqdm.tqdm(self.dataloader, dynamic_ncols=True, desc='Evaluation Progress')):
+        for batch_idx, (inputs, calibs, targets, info) in enumerate(tqdm.tqdm(self.dataloader, dynamic_ncols=True, desc=f'rank={misc.get_rank()} Evaluation Progress')):
             # load evaluation data and move data to GPU.
             inputs = inputs.to(self.device)
             calibs: torch.Tensor = calibs.to(self.device)

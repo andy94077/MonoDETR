@@ -29,6 +29,9 @@ def prepare_targets(targets: Dict[str, torch.Tensor], batch_size: int) -> List[D
             * 'heading_bin'
             * 'heading_res'
             * 'mask_2d'
+            * 'depth_map' (optional)
+            * 'roi_depth' (optional)
+            * 'depth_mask' (optional)
             Each value of the key is a tensor.
 
     Returns:
@@ -38,7 +41,9 @@ def prepare_targets(targets: Dict[str, torch.Tensor], batch_size: int) -> List[D
     targets_list = []
     mask = targets['mask_2d']
 
-    key_list = ['labels', 'boxes', 'calibs', 'depth', 'size_3d', 'src_size_3d', 'heading_bin', 'heading_res', 'boxes_3d']
+    key_list = ['labels', 'boxes', 'calibs', 'depth', 'size_3d', 'src_size_3d', 'heading_bin', 'heading_res', 'boxes_3d',
+                'roi_depth', 'depth_mask',
+                ]
     batch_wise_key_list = ['depth_map']
     for bz in range(batch_size):
         target_dict = {}

@@ -38,7 +38,8 @@ def load_pretrained_weight(model, filename, map_location, logger: Optional[loggi
         checkpoint = torch.load(filename, map_location)
         if model is not None and checkpoint['model_state'] is not None:
             if isinstance(model, DDP):
-                states = {key: value for key, value in checkpoint['model_state'].items() if 'depth_predictor.depth_head.0' not in key}
+                # states = {key: value for key, value in checkpoint['model_state'].items() if 'depth_predictor.depth_head.0' not in key}
+                states = {key: value for key, value in checkpoint['model_state'].items() if 'backbone' in key}
                 model.module.load_state_dict(states, strict=False)  # type: ignore
                 # model.module.load_state_dict(checkpoint['model_state'], strict=False)
             else:

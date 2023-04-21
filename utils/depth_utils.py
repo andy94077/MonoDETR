@@ -54,12 +54,12 @@ def get_depth_bin_values(depth_min: float, depth_max: float, num_depth_bins: int
 
 
 def get_gt_depth_map_values(depth_logits: torch.Tensor, targets: List[Dict[str, torch.Tensor]], depth_max: float) -> torch.Tensor:
+    B, _, H, W = depth_logits.shape
     num_gt_per_img = [len(t['boxes']) for t in targets]
-    gt_boxes2d = torch.cat([t['boxes'] for t in targets], dim=0) * depth_logits.new_tensor([80, 24, 80, 24])
+    gt_boxes2d = torch.cat([t['boxes'] for t in targets], dim=0) * depth_logits.new_tensor([W, H, W, H])
     gt_boxes2d = box_ops.box_cxcywh_to_xyxy(gt_boxes2d)
     gt_center_depth = torch.cat([t['depth'] for t in targets], dim=0).squeeze(dim=1)
 
-    B, _, H, W = depth_logits.shape
     depth_maps = depth_logits.new_full((B, H, W), depth_max)
 
     # Set box corners

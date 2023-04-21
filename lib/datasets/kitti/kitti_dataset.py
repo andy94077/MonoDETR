@@ -1,22 +1,33 @@
-from .pd import PhotometricDistort
-import copy
-import lib.datasets.kitti.kitti_eval_python.kitti_common as kitti
-from lib.datasets.kitti.kitti_eval_python.eval import get_distance_eval_result
-from lib.datasets.kitti.kitti_eval_python.eval import get_official_eval_result
-from lib.datasets.kitti.kitti_utils import affine_transform
-from lib.datasets.kitti.kitti_utils import get_affine_transform
-from lib.datasets.kitti.kitti_utils import Calibration
-from lib.datasets.kitti.kitti_utils import get_objects_from_label
-from lib.datasets.utils import draw_umich_gaussian
-from lib.datasets.utils import gaussian_radius
-from lib.datasets.utils import angle2class
 import os
-from typing import Dict, Optional, Tuple
-import numpy as np
-import torch.utils.data as data
-import cv2
-from PIL import Image, ImageFile
+import sys
+
+# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# ROOT_DIR = os.path.dirname(BASE_DIR)
+# sys.path.append('/home/team/MonoDETR/')
+
+import copy
 import random
+from typing import Dict, Optional, Sequence, Tuple
+
+import cv2
+import numpy as np
+import torch
+import torch.utils.data as data
+from PIL import Image, ImageFile
+from torchvision.ops import roi_align
+
+import lib.datasets.kitti.kitti_eval_python.kitti_common as kitti
+from lib.datasets.kitti.kitti_eval_python.eval import (
+    get_distance_eval_result, get_official_eval_result)
+from lib.datasets.kitti.kitti_utils import (Calibration, affine_transform,
+                                            get_affine_transform,
+                                            get_objects_from_label)
+from lib.datasets.utils import (angle2class, draw_umich_gaussian,
+                                gaussian_radius)
+from lib.datasets.kitti.pd import PhotometricDistort
+from utils import box_ops, depth_utils
+
+
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
@@ -82,6 +93,11 @@ class KITTI_Dataset(data.Dataset):
         # depth
         self.depth_min = cfg.get('depth_min', 1e-3)
         self.depth_max = cfg.get('depth_max', 60)
+        self.depth_map_downsample = cfg.get('depth_map_downsample', 16)
+
+        self.with_roi_depth = cfg.get('with_roi_depth', False)
+        self.grid_H = cfg.get('grid_H', 5)
+        self.grid_W = cfg.get('grid_W', 7)
 
         # others
         self.downsample = 32
@@ -110,6 +126,69 @@ class KITTI_Dataset(data.Dataset):
         pad_wr = dst_W - pad_w - depth_map.shape[1]
         depth_map = np.pad(depth_map, ((pad_h, 0), (pad_w, pad_wr)), mode='edge')
         return Image.fromarray(depth_map)
+
+    def build_sparse_depth_map(self, depth_map_resolution: Sequence[int], boxes2d: torch.Tensor, center_depth: torch.Tensor) -> torch.Tensor:
+        """Builds a sparse depth map from some 2D bboxes and their center depth.
+
+        Args:
+            depth_map_resolution: The depth map size (W, H).
+            boxes2d: A tensor of normalized 2D bboxes (cx, cy, w, h) with shape [num_boxes, 4]. Each element is in [0, 1].
+            center_depth: A tensor representing the center depth in 3D space of each 2D bboxes with shape [num_boxes, 1].
+        """
+        W, H = depth_map_resolution
+        boxes2d = boxes2d * boxes2d.new_tensor([W, H, W, H])
+        # (x_min, y_min, x_max, y_max)
+        boxes2d = box_ops.box_cxcywh_to_xyxy(boxes2d)
+        # [num_boxes,]
+        center_depth = center_depth.squeeze(dim=1)
+
+        depth_map = boxes2d.new_full((H, W), self.depth_max)
+
+        # Set box corners
+        boxes2d[:, :2] = torch.floor(boxes2d[:, :2])
+        boxes2d[:, 2:] = torch.ceil(boxes2d[:, 2:])
+        boxes2d = boxes2d.long()
+
+        # Set all values within each box to True
+        center_depth, sorted_idx = torch.sort(center_depth, descending=True)
+        boxes2d = boxes2d[sorted_idx]
+        for bbox, depth in zip(boxes2d, center_depth):
+            u1, v1, u2, v2 = bbox
+            depth_map[v1:v2, u1:u2] = depth
+        depth_map[(depth_map < self.depth_min) | (depth_map > self.depth_max)] = self.depth_max
+        return depth_map
+
+    def build_roi_depth(self, depth_map: torch.Tensor, boxes2d: torch.Tensor, center_depth: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Builds roi aligned depth map from each 2D bboxes.
+
+        Args:
+            depth_map: A tensor of the depth map with shape [H, W].
+            boxes2d: A tensor of normalized 2D bboxes (cx, cy, w, h) with shape [num_boxes, 4]. Each element is in [0, 1].
+            center_depth: A tensor representing the center depth in 3D space of each 2D bboxes with shape [num_boxes, 1].
+        """
+        H, W = depth_map.shape
+        boxes2d = boxes2d * boxes2d.new_tensor([W, H, W, H])
+        # (x_min, y_min, x_max, y_max)
+        boxes2d = box_ops.box_cxcywh_to_xyxy(boxes2d)
+        # [num_boxes,]
+        center_depth = center_depth.squeeze(dim=1)
+
+        bbox_masks = (boxes2d[:, 0] < boxes2d[:, 2]) & (boxes2d[:, 1] < boxes2d[:, 3])
+
+        roi_depths = torch.full((boxes2d.shape[0], self.grid_H, self.grid_W), self.depth_max, dtype=torch.float32)
+        if bbox_masks.any():
+            roi_aligned_out = roi_align(depth_map.unsqueeze(0).unsqueeze(0).type(torch.float32),
+                                        [boxes2d[bbox_masks]], (self.grid_H, self.grid_W), aligned=True)
+            roi_depths[bbox_masks] = roi_aligned_out[:, 0]
+
+        # maintain interested points
+        roi_depth_masks = torch.zeros((boxes2d.shape[0], self.grid_H, self.grid_W), dtype=bool)
+        roi_depth_masks = (center_depth.view(-1, 1, 1) - 3 < roi_depths) & \
+            (roi_depths < center_depth.view(-1, 1, 1) + 3) & \
+            (roi_depths > 0)
+        roi_depths[~roi_depth_masks] = self.depth_max
+
+        return roi_depths, roi_depth_masks
 
     def eval(self, results_dir, logger) -> Tuple[Dict[str, float], float]:
         logger.info("==> Loading detections and GTs...")
@@ -190,24 +269,6 @@ class KITTI_Dataset(data.Dataset):
         #  ============================   get labels   ==============================
         objects = self.get_label(index)
 
-        if self.use_gt_depth_map:
-            depth_map = self.get_depth_map(index, img_size)
-            if random_flip_flag:
-                depth_map = depth_map.transpose(Image.FLIP_LEFT_RIGHT)
-
-            # [depth_map_W, depth_map_H]
-            final_depth_map_size = self.resolution // 16
-            depth_map = depth_map.transform(tuple(self.resolution),
-                                            method=Image.AFFINE,
-                                            data=tuple(trans_inv.reshape(-1)),
-                                            resample=Image.BILINEAR)
-
-            depth_map = np.array(depth_map).astype(np.float32)
-            depth_map = cv2.resize(depth_map, tuple(final_depth_map_size), interpolation=cv2.INTER_AREA)
-            depth_map = np.clip(depth_map, self.depth_min, self.depth_max)
-        else:
-            depth_map = np.array([])
-
         # data augmentation for labels
         if random_flip_flag:
             if self.aug_calib:
@@ -231,7 +292,7 @@ class KITTI_Dataset(data.Dataset):
         # labels encoding
         calibs = np.zeros((self.max_objs, 3, 4), dtype=np.float32)
         indices = np.zeros((self.max_objs), dtype=np.int64)
-        mask_2d = np.zeros((self.max_objs), dtype=np.bool)
+        mask_2d = np.zeros((self.max_objs), dtype=bool)
         labels = np.zeros((self.max_objs), dtype=np.int8)
         depth = np.zeros((self.max_objs, 1), dtype=np.float32)
         heading_bin = np.zeros((self.max_objs, 1), dtype=np.int64)
@@ -343,6 +404,31 @@ class KITTI_Dataset(data.Dataset):
 
             calibs[i] = calib_matrix
 
+        if self.use_gt_depth_map:
+            depth_map = self.get_depth_map(index, img_size)
+            if random_flip_flag:
+                depth_map = depth_map.transpose(Image.FLIP_LEFT_RIGHT)
+
+            # [depth_map_W, depth_map_H]
+            final_depth_map_size = self.resolution // self.depth_map_downsample
+            depth_map = depth_map.transform(tuple(self.resolution),
+                                            method=Image.AFFINE,
+                                            data=tuple(trans_inv.reshape(-1)),
+                                            resample=Image.BILINEAR)
+
+            depth_map_original = np.array(depth_map).astype(np.float32)
+            depth_map = cv2.resize(depth_map_original, tuple(final_depth_map_size), interpolation=cv2.INTER_AREA)
+            depth_map[(depth_map < self.depth_min) | (depth_map > self.depth_max)] = self.depth_max
+            depth_map_original[(depth_map_original < self.depth_min) | (depth_map_original > self.depth_max)] = self.depth_max
+            depth_map = torch.from_numpy(depth_map)
+            depth_map_original = torch.from_numpy(depth_map_original)
+        else:
+            depth_map = self.build_sparse_depth_map(self.resolution // self.depth_map_downsample, torch.from_numpy(boxes), torch.from_numpy(depth))
+            depth_map_original = self.build_sparse_depth_map(self.resolution, torch.from_numpy(boxes), torch.from_numpy(depth))
+
+        if self.with_roi_depth:
+            roi_depths, depth_masks = self.build_roi_depth(depth_map, torch.from_numpy(boxes), torch.from_numpy(depth))
+
         # collect return data
         inputs = img
         targets = {
@@ -359,7 +445,11 @@ class KITTI_Dataset(data.Dataset):
             'heading_bin': heading_bin,
             'heading_res': heading_res,
             'depth_map': depth_map,
+            'depth_map_original': depth_map_original,  # for debuging only
             'mask_2d': mask_2d}
+        if self.with_roi_depth:
+            targets['roi_depth'] = roi_depths
+            targets['depth_mask'] = depth_masks
 
         info = {'img_id': index,
                 'img_size': img_size,
@@ -369,29 +459,53 @@ class KITTI_Dataset(data.Dataset):
 
 if __name__ == '__main__':
     from torch.utils.data import DataLoader
-    cfg = {'root_dir': '../../../data/KITTI',
-           'random_flip': 0.0, 'random_crop': 1.0, 'scale': 0.8, 'shift': 0.1, 'use_dontcare': False,
-           'class_merging': False, 'writelist': ['Pedestrian', 'Car', 'Cyclist'], 'use_3d_center': False}
+    import matplotlib.pyplot as plt
+    cfg = {'root_dir': '/mnt/ssd2/KITTIDataset',
+           'aug_crop': False, 'random_flip': 0.0, 'random_crop': 1.0, 'scale': 0.4, 'shift': 0.25, 'use_dontcare': False,
+           'use_gt_depth_map': False, 'depth_min': 1e-3, 'depth_max': 60.0,
+           'with_roi_depth': True,
+           'class_merging': False, 'writelist': ['Car'], 'use_3d_center': True}
     dataset = KITTI_Dataset('train', cfg)
     dataloader = DataLoader(dataset=dataset, batch_size=1)
     print(dataset.writelist)
 
-    for batch_idx, (inputs, targets, info) in enumerate(dataloader):
+    for batch_idx, (inputs, calibs, targets, info) in enumerate(dataloader):
+        if info['img_id'][0] != 10:
+            continue
         # test image
         img = inputs[0].numpy().transpose(1, 2, 0)
-        img = (img * dataset.std + dataset.mean) * 255
-        img = Image.fromarray(img.astype(np.uint8))
-        img.show()
+        img = np.ascontiguousarray((img * dataset.std + dataset.mean) * 255, dtype=np.uint8)
         # print(targets['size_3d'][0][0])
+        boxes = box_ops.box_cxcywh_to_xyxy(targets['boxes'][0])
+        for x_min, y_min, x_max, y_max in boxes:
+            x_min = x_min * 1280
+            y_min = y_min * 384
+            x_max = x_max * 1280
+            y_max = y_max * 384
+            img = cv2.rectangle(img, (int(x_min), int(y_min)), (int(x_max), int(y_max)), (0, 0, 255), 3)
+        img = Image.fromarray(img.astype(np.uint8))
+        img.save('/home/team/MonoDETR/test.png')
+        fig, ax = plt.subplots(figsize=(10, 3.2))
+        depth_map = targets['depth_map'][0].numpy()
+        ax.imshow(depth_map, vmin=cfg['depth_min'], vmax=cfg['depth_max'])
+        # ax.imshow(targets['depth_map_original'][0].numpy(), vmin=cfg['depth_min'], vmax=cfg['depth_max'])
+        # ax.set_xticks(np.arange(0, 1280, 100))
+        fig.savefig('/home/team/MonoDETR/test_depth_map.png', bbox_inches='tight')
+        num_roi_depth = 0
+        for depth, roi_depth, box in zip(targets['depth'][0], targets['roi_depth'][0], boxes):
+            if depth == 0:
+                continue
+            if num_roi_depth >= 10:
+                break
+            plt.figure(figsize=(4, 3))
+            plt.imshow(roi_depth.numpy(), vmin=cfg['depth_min'], vmax=cfg['depth_max'])
+            plt.title(f'{box.numpy() * np.array([depth_map.shape[1], depth_map.shape[0], depth_map.shape[1], depth_map.shape[0]])}')
+            plt.savefig(f'/home/team/MonoDETR/test_roi_depth_{num_roi_depth}.png', bbox_inches='tight')
+            num_roi_depth += 1
 
-        # test heatmap
-        heatmap = targets['heatmap'][0]  # image id
-        heatmap = Image.fromarray(heatmap[0].numpy() * 255)  # cats id
-        heatmap.show()
-
+        # print ground truth fisrt
+        objects = dataset.get_label(info['img_id'][0])
+        for object in objects:
+            print(object.to_kitti_format())
         break
 
-    # print ground truth fisrt
-    objects = dataset.get_label(0)
-    for object in objects:
-        print(object.to_kitti_format())

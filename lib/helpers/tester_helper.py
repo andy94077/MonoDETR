@@ -167,10 +167,7 @@ class Tester(object):
         return result_dict, car_moderate
 
     def log_depth_map(self, writer: SummaryWriter, depth_logits: torch.Tensor, targets: List[Dict[str, torch.Tensor]], global_step: int, tag: str):
-        if self.cfg.get('use_gt_depth_map'):
-            depth_map_values = torch.stack([t['depth_map'] for t in targets])
-        else:
-            depth_map_values = depth_utils.get_gt_depth_map_values(depth_logits, targets, self.cfg['depth_max'])
+        depth_map_values = torch.stack([t['depth_map'] for t in targets])
         depth_indices = depth_utils.bin_depths(depth_map_values,
                                                target=True,
                                                depth_min=self.cfg['depth_min'],

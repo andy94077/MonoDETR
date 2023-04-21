@@ -4,12 +4,14 @@ from . import monodetr
 from . import monodetr_depth_pretrained
 from . import monooqdd
 from . import monodepth_attention
+from . import monoroi_depth
 
 AVAILABLE_MODELS = {
     'MonoDepthAttention': monodepth_attention.build,
     'MonoDepthPretrained': monodetr_depth_pretrained.build,
     'MonoDETR': monodetr.build,
     'MonoOQDD': monooqdd.build,
+    'MonoRoIDepth': monoroi_depth.build,
 }
 
 

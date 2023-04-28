@@ -49,12 +49,20 @@ model:
   masks: False
 
   # Depth predictor
+  depth_predictor:
+    type: DepthPredictorResidualRoI
   mode: LID
   num_depth_bins: &num_depth_bins 80
   depth_min: *depth_min
   depth_max: *depth_max
   with_depth_residual: True
   with_calibs: True
+
+  # RoI depth layer
+  roi_depth_layer:
+    type: RoIDepth
+    grid_H: *grid_H
+    grid_W: *grid_W
 
   # Transformer
   with_box_refine: True
@@ -176,7 +184,7 @@ trainer:
   # pretrain_model: runs/trainval/monodetr_depth_pretrained_with_calibs3/checkpoint.pth
   log_frequency: 5 # tensorboard log frequency (per epoch) (1 ~ 100)
   save_path: "./runs"
-  save_all: False # False for only savng the best and latest ckpts
+  save_all: True # False for only savng the best and latest ckpts
 
 tester:
   type: *dataset_type

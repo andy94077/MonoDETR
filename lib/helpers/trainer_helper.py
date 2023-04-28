@@ -121,10 +121,10 @@ class Trainer(object):
                             ckpt_name)
                     if self.tester:
                         self.logger.info(f'Test Epoch {self.epoch}')
-                        val_losses_log_dict = self.tester.inference(loss=self.detr_loss, return_loss=True, writer=self.writer if self.with_tensorboard else None)
+                        val_losses_log_dict = self.tester.inference(loss=self.detr_loss, return_loss=True, writer=self.writer if self.with_tensorboard else None, epoch=self.epoch if self.cfg['save_all'] else None)
                         dist.barrier()
                         if misc.is_main_process():
-                            result_dict, cur_result = self.tester.evaluate()
+                            result_dict, cur_result = self.tester.evaluate(epoch=self.epoch if self.cfg['save_all'] else None)
                             if cur_result > best_result:
                                 best_result = cur_result
                                 best_epoch = self.epoch

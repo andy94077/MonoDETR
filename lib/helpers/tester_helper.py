@@ -45,10 +45,11 @@ class Tester(object):
 
         # test a single checkpoint
         if self.cfg['mode'] == 'single' or not self.train_cfg["save_all"]:
-            if self.train_cfg["save_all"]:
-                checkpoint_path = os.path.join(self.output_dir, "checkpoint_epoch_{}.pth".format(self.cfg['checkpoint']))
-            else:
-                checkpoint_path = os.path.join(self.output_dir, "checkpoint_best.pth")
+            checkpoint_path = os.path.join(self.output_dir, "checkpoint_best.pth")
+            # if self.train_cfg["save_all"]:
+            #     checkpoint_path = os.path.join(self.output_dir, "checkpoint_epoch_{}.pth".format(self.cfg['checkpoint']))
+            # else:
+            #     checkpoint_path = os.path.join(self.output_dir, "checkpoint_best.pth")
             assert os.path.exists(checkpoint_path)
             load_checkpoint(model=self.model,
                             optimizer=None,
@@ -65,25 +66,26 @@ class Tester(object):
         # test all checkpoints in the given dir
         elif self.cfg['mode'] == 'all' and self.train_cfg["save_all"]:
             start_epoch = int(self.cfg['checkpoint'])
-            checkpoints_list = []
+            checkpoints = {}
             for _, _, files in os.walk(self.output_dir):
                 for f in files:
                     if f.endswith(".pth") and f != 'checkpoint_best.pth' and int(f[17:-4]) >= start_epoch:
-                        checkpoints_list.append(os.path.join(self.output_dir, f))
-            checkpoints_list.sort(key=os.path.getmtime)
+                        epoch = int(f[17:-4])
+                        checkpoints[epoch] = os.path.join(self.output_dir, f)
+            checkpoints = dict(sorted(checkpoints.items()))
 
-            for checkpoint in checkpoints_list:
+            for epoch, checkpoint in checkpoints.items():
                 load_checkpoint(model=self.model,
                                 optimizer=None,
                                 filename=checkpoint,
                                 map_location=self.device,
                                 logger=self.logger)
                 self.model.to(self.device)
-                self.inference()
-                self.evaluate()
+                self.inference(epoch=epoch)
+                self.evaluate(epoch=epoch)
 
     @torch.no_grad()
-    def inference(self, loss: Optional[nn.Module] = None, return_loss: bool = False, writer: Optional[SummaryWriter] = None) -> Dict[str, Number]:
+    def inference(self, loss: Optional[nn.Module] = None, return_loss: bool = False, writer: Optional[SummaryWriter] = None, epoch: Optional[int] = None) -> Dict[str, Number]:
         self.dataloader.sampler.set_epoch(self.epoch)
         self.epoch += 1
         self.model.eval()
@@ -134,12 +136,12 @@ class Tester(object):
         self.logger.info(f'Inference on {len(self.dataloader)} images by {model_infer_time / len(self.dataloader)}/per image.')
 
         # save the result for evaluation.
-        self.logger.info(f"==> Saving to {os.path.join(self.output_dir, 'outputs', 'data')}...")
-        self.save_results(results)
+        output_dir = os.path.join(self.output_dir, 'outputs' if epoch is None else f'outputs_{epoch:03d}', 'data')
+        self.logger.info(f'==> Saving to {output_dir}...')
+        self.save_results(results, output_dir)
         return log_dict
 
-    def save_results(self, results):
-        output_dir = os.path.join(self.output_dir, 'outputs', 'data')
+    def save_results(self, results, output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
         for img_id in results.keys():
@@ -156,12 +158,12 @@ class Tester(object):
                 class_name = self.class_name[int(results[img_id][i][0])]
                 f.write('{} 0.0 0'.format(class_name))
                 for j in range(1, len(results[img_id][i])):
-                    f.write(' {:.2f}'.format(results[img_id][i][j]))
+                    f.write(' {:.2f}'.format(round(results[img_id][i][j], 2)))
                 f.write('\n')
             f.close()
 
-    def evaluate(self) -> Tuple[Dict[str, float], float]:
-        results_dir = os.path.join(self.output_dir, 'outputs', 'data')
+    def evaluate(self, epoch: Optional[int] = None) -> Tuple[Dict[str, float], float]:
+        results_dir = os.path.join(self.output_dir, 'outputs' if epoch is None else f'outputs_{epoch:03d}', 'data')
         assert os.path.exists(results_dir)
         result_dict, car_moderate = self.dataloader.dataset.eval(results_dir=results_dir, logger=self.logger)
         return result_dict, car_moderate

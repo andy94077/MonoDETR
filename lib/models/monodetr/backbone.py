@@ -22,6 +22,8 @@ from typing import Dict, List
 from utils.misc import NestedTensor, is_main_process
 
 from .position_encoding import build_position_encoding
+from .dla.dla import dla34
+from .dla.dlaup import DLAUp
 
 
 class FrozenBatchNorm2d(torch.nn.Module):
@@ -106,6 +108,32 @@ class Backbone(BackboneBase):
             self.strides[-1] = self.strides[-1] // 2
 
 
+class DLABackbone(nn.Module):
+    AVAILABLE_BACKBONES = {
+        'dla34': dla34,
+    }
+
+    def __init__(self, name: str, pretrained: bool = True, start_level: int = 2, **kwargs):
+        super().__init__()
+        if name not in self.AVAILABLE_BACKBONES:
+            raise NotImplementedError(f'Unknown backbone "{name}". Available backbones are {self.AVAILABLE_BACKBONES.keys()}')
+        self.backbone = self.AVAILABLE_BACKBONES[name](pretrained=is_main_process(),
+                                                       return_levels=True,
+                                                       **kwargs)
+        self.start_level = start_level
+        self.strides = [2**start_level]
+        self.num_channels = self.backbone.channels[self.start_level:]
+        scales = [2**i for i, _ in enumerate(self.num_channels)]
+        self.neck = DLAUp(self.num_channels, scales)
+
+    def forward(self, images) -> Dict[str, NestedTensor]:
+        x = self.backbone(images)
+        x = self.neck(x[self.start_level:])
+        mask = x.new_zeros((x.shape[0], x.shape[2], x.shape[3]), dtype=torch.bool)
+        output = {'0': NestedTensor(x, mask)}
+        return output
+
+
 class Joiner(nn.Sequential):
     def __init__(self, backbone, position_embedding):
         super().__init__(backbone, position_embedding)
@@ -129,7 +157,15 @@ class Joiner(nn.Sequential):
 def build_backbone(cfg):
     
     position_embedding = build_position_encoding(cfg)
-    return_interm_layers = cfg['masks'] or cfg['num_feature_levels'] > 1
-    backbone = Backbone(cfg['backbone'], cfg['train_backbone'], return_interm_layers, cfg['dilation'])
+    if cfg['backbone'].startswith('resnet'):
+        return_interm_layers = cfg['masks'] or cfg['num_feature_levels'] > 1
+        backbone = Backbone(cfg['backbone'], cfg['train_backbone'], return_interm_layers, cfg['dilation'])
+    elif cfg['backbone'].startswith('dla'):
+        backbone = DLABackbone(cfg['backbone'],
+                               pretrained=True,
+                               start_level=cfg['start_level'],
+                               )
+    else:
+        raise NotImplementedError(f'Unsupported backbone "{cfg["backbone"]}".')
     model = Joiner(backbone, position_embedding)
     return model

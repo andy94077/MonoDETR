@@ -1,11 +1,13 @@
 from .depth_predictor import DepthPredictor
 from .depth_predictor_residual import DepthPredictorResidual
 from .depth_predictor_residual_roi import DepthPredictorResidualRoI
+from .dla_depth_predictor_residual_roi import DLADepthPredictorResidualRoI
 
 _AVAILABLE_DEPTH_PREDICTORS = {
     'DepthPredictor': DepthPredictor,
     'DepthPredictorResidual': DepthPredictorResidual,
     'DepthPredictorResidualRoI': DepthPredictorResidualRoI,
+    'DLADepthPredictorResidualRoI': DLADepthPredictorResidualRoI,
 }
 
 

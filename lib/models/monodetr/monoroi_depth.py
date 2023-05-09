@@ -192,11 +192,11 @@ class MonoRoIDepth(nn.Module):
             'targets': targets,
         }
         if self.with_depth_residual:
-            pred_depth_map_logits, depth_pos_embed, weighted_depth, pred_depth_map_residual, pred_roi_depths = self.depth_predictor(srcs, masks[1], pos[1], **kwargs_dict)
+            pred_depth_map_logits, depth_pos_embed, weighted_depth, pred_depth_map_residual, pred_roi_depths = self.depth_predictor(srcs, masks[min(len(masks) - 1, 1)], pos[min(len(pos) - 1, 1)], **kwargs_dict)
             out['pred_depth_map_residual'] = pred_depth_map_residual
             out['pred_roi_depth'] = pred_roi_depths
         else:
-            pred_depth_map_logits, depth_pos_embed, weighted_depth = self.depth_predictor(srcs, masks[1], pos[1], **kwargs_dict)
+            pred_depth_map_logits, depth_pos_embed, weighted_depth = self.depth_predictor(srcs, masks[min(len(masks) - 1, 1)], pos[min(len(pos) - 1, 1)], **kwargs_dict)
         out['pred_depth_map_logits'] = pred_depth_map_logits
         out['weighted_depth'] = weighted_depth
 
@@ -477,7 +477,7 @@ class SetCriterion(nn.Module):
                          **kwargs) -> Dict[str, torch.Tensor]:
         matched_outputs, matched_targets = kwargs['matched_outputs'], kwargs['matched_targets']
         depth_geo = matched_outputs['debug_depth_geo']
-        depth_reg = matched_outputs['debug_depth_reg']
+        depth_reg = matched_outputs['pred_depth'][:, 0]
         depth_map = matched_outputs['debug_depth_map']
         target_depths = matched_targets['depth'].squeeze()
 

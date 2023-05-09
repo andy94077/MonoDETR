@@ -44,6 +44,7 @@ class Trainer(object):
         self.lr_scheduler = lr_scheduler
         self.warmup_lr_scheduler = warmup_lr_scheduler
         self.logger = logger
+        self.saving_start_epoch = self.cfg.get('saving_start_epoch', 130)
         self.epoch = 0
         self.best_result = 0
         self.best_epoch = 0
@@ -112,7 +113,7 @@ class Trainer(object):
                 with torch.no_grad():
                     if misc.is_main_process():
                         os.makedirs(self.output_dir, exist_ok=True)
-                        if self.cfg['save_all']:
+                        if self.cfg['save_all'] and self.epoch >= self.saving_start_epoch:
                             ckpt_name = os.path.join(self.output_dir, 'checkpoint_epoch_%d' % self.epoch)
                         else:
                             ckpt_name = os.path.join(self.output_dir, 'checkpoint')

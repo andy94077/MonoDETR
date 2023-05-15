@@ -101,9 +101,13 @@ class DepthPredictorResidualRoI(nn.Module):
         if targets and 'boxes' in targets[0]:
             target_boxes = torch.cat([t['boxes'] for t in targets], dim=0)
             num_gt_per_img = target_boxes.new_tensor([len(t['boxes']) for t in targets], dtype=torch.long)
-            # [batch, C, grid_H, grid_W]
+            # [num_boxes, C, grid_H, grid_W]
             roi_src = self.roi_depth(src, target_boxes, num_gt_per_img)
             roi_depths = self.depth_classifier(roi_src)
+            roi_depths_residual = self.depth_residual(roi_src)
+            roi_depth_probs = F.softmax(roi_depths, dim=1)
+            roi_weighted_depth = torch.einsum('bchw,c->bhw', roi_depth_probs, self.depth_bin_values)
+            roi_weighted_depth += roi_depths_residual.gather(dim=1, index=roi_depths.argmax(1, keepdim=True)).squeeze()
         else:
             roi_depths = None
 
@@ -151,7 +155,7 @@ class DepthPredictorResidualRoI(nn.Module):
         depth_pos_embed_ip = self.interpolate_depth_embed(weighted_depth)
         depth_embed = depth_embed + depth_pos_embed_ip
 
-        return depth_logits, depth_embed, weighted_depth, depth_residual, roi_depths
+        return depth_logits, depth_embed, weighted_depth, depth_residual, roi_depths, roi_weighted_depth
 
     def interpolate_depth_embed(self, depth):
         depth = depth.clamp(min=0, max=self.depth_max)

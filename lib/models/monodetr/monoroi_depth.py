@@ -192,9 +192,10 @@ class MonoRoIDepth(nn.Module):
             'targets': targets,
         }
         if self.with_depth_residual:
-            pred_depth_map_logits, depth_pos_embed, weighted_depth, pred_depth_map_residual, pred_roi_depths = self.depth_predictor(srcs, masks[min(len(masks) - 1, 1)], pos[min(len(pos) - 1, 1)], **kwargs_dict)
+            pred_depth_map_logits, depth_pos_embed, weighted_depth, pred_depth_map_residual, pred_roi_depths, pred_roi_weighted_depth = self.depth_predictor(srcs, masks[min(len(masks) - 1, 1)], pos[min(len(pos) - 1, 1)], **kwargs_dict)
             out['pred_depth_map_residual'] = pred_depth_map_residual
             out['pred_roi_depth'] = pred_roi_depths
+            out['pred_roi_weighted_depth'] = pred_roi_weighted_depth
         else:
             pred_depth_map_logits, depth_pos_embed, weighted_depth = self.depth_predictor(srcs, masks[min(len(masks) - 1, 1)], pos[min(len(pos) - 1, 1)], **kwargs_dict)
         out['pred_depth_map_logits'] = pred_depth_map_logits
@@ -448,6 +449,8 @@ class SetCriterion(nn.Module):
         # [num_boxes, num_depth_bins, grid_H, grid_W]
         src_roi_depths = outputs['pred_roi_depth']
         # [num_boxes, grid_H, grid_W]
+        src_roi_weighted_depths = outputs['pred_roi_weighted_depth']
+        # [num_boxes, grid_H, grid_W]
         target_roi_depths = torch.cat([t['roi_depth'] for t in targets], dim=0)
         # [num_boxes, grid_H, grid_W]
         depth_masks = torch.cat([t['depth_mask'] for t in targets], dim=0)
@@ -457,6 +460,10 @@ class SetCriterion(nn.Module):
         # [num_valid_grids, num_depth_bins]
         src_roi_depths = src_roi_depths[depth_masks]
         # [num_valid_grids]
+        src_roi_weighted_depths = src_roi_weighted_depths[depth_masks]
+        # [num_valid_grids, num_depth_bins]
+        src_roi_weighted_depths = torch.broadcast_to(src_roi_weighted_depths.unsqueeze(1), src_roi_depths.shape)
+        # [num_valid_grids]
         target_roi_depths = target_roi_depths[depth_masks]
         target_roi_depths_cls = depth_utils.bin_depths(target_roi_depths,
                                                        depth_min=self.depth_min, depth_max=self.depth_max, num_bins=self.num_depth_bins, target=True)
@@ -465,8 +472,12 @@ class SetCriterion(nn.Module):
         num_valid_grids = torch.clamp(num_valid_grids / misc.get_world_size(), min=1).item()
 
         roi_depth_loss = focal_loss(src_roi_depths, target_roi_depths_cls, alpha=self.focal_alpha, reduction='sum')
+        roi_weighted_depth_loss = regression_focal_loss(src_roi_depths, src_roi_weighted_depths, target_roi_depths_cls, target_roi_depths, alpha=self.focal_alpha, reduction='sum') / num_valid_grids
         roi_depth_loss = roi_depth_loss / num_valid_grids
-        return roi_depth_loss
+        return {
+            'loss_roi_depth': roi_depth_loss,
+            'loss_roi_weighted_depth': roi_weighted_depth_loss,
+        }
 
     @torch.no_grad()
     def loss_depth_debug(self,
